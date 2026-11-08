@@ -35,7 +35,7 @@ if "$ANS" run hash abc; then
 fi
 ```
 
-`book seed` installs the finite sample data, not all languages and not a private seed. It does not mint. The pinned rdzeń root is `a8e5657614f0a4721d298b03d9f897bc64e3c4937059ea7a3393b90367a20b52`. A Merkle root binds leaf bytes, not linguistic truth. Wrapper metadata is not root-bound.
+`book seed` installs the finite sample data, not all languages and not a private seed. It does not mint. The pinned rdzeń root is `a8e5657614f0a4721d298b03d9f897bc64e3c4937059ea7a3393b90367a20b52`. A Merkle root binds leaf bytes, not linguistic truth. Wrapper identity must match a single root-bound identity leaf; an identity-level schema, when present, must match the wrapper schema. Legacy identities without a schema do not independently bind their type; the signed lifecycle snapshot and cache comparison preserve the accepted type.
 
 ## MCP
 
@@ -71,7 +71,7 @@ A fresh-directory CLI smoke confirmed `book seed` returns `minted: false`, the p
 
 `ans --as alice dictionary apply REQUEST.json` is the new shared typed service entry point. Use a fresh test directory and stop `ans up` before offline writes. An existing local test custodian is required; the service does not initialize one. Do not use real identities or restore old signing state.
 
-An admitted operation is a parseable request with a 1–128 byte `op_id` and an available, explicitly named custodian. JSON/schema errors, unavailable identities and lock contention fail before admission because no safe signer is available; these are not claimed to have ledger receipts. Every admitted invocation, including rejection, inspection and retry, records a signed `dictionary.intent` and `dictionary.outcome` through the existing journal/PopChain projection. Receipt status, not process exit 0, determines domain acceptance. Responses include the signed outcome event, binding the intent hash, command digest and receipt; signature validity does not prove factual truth.
+An admitted operation is a parseable request with a 1–128 byte `op_id` and an available, explicitly named custodian. JSON/schema errors, unavailable identities, lock contention and canonical outcomes without matching preceding intents fail before admission because no safe signer is available; these are not claimed to have ledger receipts. Every admitted invocation, including rejection, inspection and retry, records a signed `dictionary.intent` and `dictionary.outcome` through the existing journal/PopChain projection. Receipt status, not process exit 0, determines domain acceptance. Responses include the signed outcome event, binding the intent hash, command digest and receipt; signature validity does not prove factual truth.
 
 Commands are tagged JSON: `draft` (with `word` and `crystal`), `validate`, `mint`, `inspect`, `run` (with `root`). `word` has `language` and `spelling`; root-bound identity leaves must agree. `validate` means structural checks, not factual truth or legal rights. Blank drafts can be retained but cannot validate. Asset/font adapters are not introduced; asset/font leaves fail validation rather than imply verified external bytes.
 
@@ -106,7 +106,9 @@ The first four receipts are accepted; `run` is rejected. This service intentiona
 
 Same ID + same command replays the original receipt while recording a new attempt; same ID + a different command is rejected. A new ID does not authorize repeating a mint. If an intent lacks a durable outcome on restart, it is closed as `interrupted`, not resumed. If a native mint reached the journal before a crash, the service refuses automatic reconciliation or another mint: manual test-state review is required. No claim of atomicity between journal and kernel, backup rollback resistance or external exactly-once effects is made.
 
-Accepted entry state is replayed from signed outcomes. Book files are a rebuildable cache; missing files are restored on subsequent admitted operations, while corrupt/conflicting files fail closed rather than being overwritten.
+Accepted entry state is replayed from signed outcomes. Replay checks the preceding intent hash, operation ID, command digest and canonical flag. This is not a complete independently verified protocol reducer: it still trusts accepted receipt state rather than re-evaluating every transition and independently requiring a corresponding native mint for every replayed `minted` entry. The service emits linked native mint/outcome events; tests verify their XMSSMT/WOTS+ signatures and exact PopChain application payload binding. The outer PopChain block is not separately signed by this writer. Do not expose generic legacy signed-event admission as a lifecycle bypass.
+
+Book files are a rebuildable cache; missing files are restored on subsequent admitted operations. Existing files must match the signed snapshot's identity, type and root, and reads must match the requested filename. Same-root wrapper identity/schema corruption fails closed: inspection receives a signed rejection and `book list` refuses the corrupt cache. Damaged files are not silently overwritten; preserve for diagnosis, then explicitly remove a damaged test cache file so the next operation can rebuild it from the signed snapshot.
 
 MCP `dictionary_propose` parses the **same Request type** and returns an unsigned, unexecuted envelope for explicit custodian CLI review. It never invokes the signer or silently approves a model request. Existing lookup/planning tools are retained.
 

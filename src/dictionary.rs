@@ -87,6 +87,23 @@ fn replay(events: &[Value]) -> Result<BTreeMap<String, Entry>> {
         .iter()
         .filter(|e| action(e) == "dictionary.outcome" && data(e)["canonical"] == true)
     {
+        let intent = events
+            .iter()
+            .find(|i| {
+                action(i) == "dictionary.intent"
+                    && i["hash"] == data(e)["intent_hash"]
+                    && i["seq"].as_u64() < e["seq"].as_u64()
+            })
+            .ok_or_else(|| anyhow!("Dictionary outcome has no preceding bound intent"))?;
+        let request: Request = serde_json::from_value(data(intent)["request"].clone())?;
+        let digest = hash(&serde_json::to_value(&request.command)?)?;
+        if data(e)["op_id"] != request.op_id.0
+            || data(e)["command_digest"] != digest
+            || data(intent)["command_digest"] != digest
+            || data(e)["canonical"] != data(intent)["canonical"]
+        {
+            bail!("Dictionary outcome does not match its intent and command");
+        }
         let r: Receipt = serde_json::from_value(data(e)["receipt"].clone())?;
         if r.status == Status::Accepted {
             if let Some(entry) = r.entry {
@@ -256,6 +273,7 @@ pub fn apply(root: &Path, owner: &str, req: Request) -> Result<Value> {
             && data(e)["op_id"] == req.op_id.0
     });
     let canonical = prior.is_none();
+    let entries = replay(&journal)?;
     let intent = append(
         owner,
         &dir,
@@ -269,7 +287,6 @@ pub fn apply(root: &Path, owner: &str, req: Request) -> Result<Value> {
             serde_json::from_value(data(prior)["receipt"].clone())?
         }
     } else {
-        let entries = replay(&journal)?;
         let result = (|| {
             let book = Book::open(&root.join("book"))?;
             for entry in entries.values() {
@@ -523,6 +540,105 @@ mod tests {
                 .count(),
             1
         );
+    }
+    #[test]
+    fn replay_refuses_cache_identity_and_schema_tamper() {
+        let h = Home::new();
+        let c: Value =
+            serde_json::from_str(include_str!("../assets/crystals/u0072.crystal.json")).unwrap();
+        let r = root(&c);
+        h.apply("draft", draft(c.clone()));
+        h.apply("validate", Command::Validate { root: r.clone() });
+        h.apply("mint", Command::Mint { root: r.clone() });
+        let cache = h.0.join("book/u0072.crystal.json");
+        for (i, schema_tamper) in [false, true].into_iter().enumerate() {
+            let mut damaged = c.clone();
+            if schema_tamper {
+                damaged["schema"] = json!(ans_dict::WORD_SCHEMA);
+                damaged["word"] = json!("r");
+            } else {
+                damaged["character"] = json!("x");
+            }
+            std::fs::write(&cache, damaged.to_string()).unwrap();
+            let result = h.apply(
+                &format!("corrupt-{i}"),
+                Command::Inspect { root: r.clone() },
+            );
+            assert_eq!(status(&result), "rejected");
+            assert!(crate::exploit::event_valid(&result["outcome"]));
+            assert!(Book::open(&h.0.join("book")).unwrap().list().is_err());
+            assert_eq!(
+                std::fs::read_to_string(&cache).unwrap(),
+                damaged.to_string()
+            );
+        }
+    }
+    #[test]
+    fn native_mint_and_outcome_match_kernel_payload_and_reject_tamper() {
+        use base64::Engine;
+        let h = Home::new();
+        let c = crystal("a", true);
+        let r = root(&c);
+        h.apply("draft", draft(c));
+        h.apply("validate", Command::Validate { root: r.clone() });
+        let result = h.apply("mint", Command::Mint { root: r.clone() });
+        let journal = h.journal();
+        let native = journal.iter().find(|e| action(e) == "word.mint").unwrap();
+        assert_eq!(data(native)["root"], r.0);
+        assert_eq!(data(native)["op_id"], "mint");
+        assert_eq!(
+            result["outcome"]["body"]["data"]["receipt"]["entry"]["root"],
+            r.0
+        );
+        let db = popchain_cli::chain::Db::open(&h.0.join("custodians/alice/kernel")).unwrap();
+        assert_eq!(db.read_state().unwrap().best_height as usize, journal.len());
+        for e in [native, &result["outcome"]] {
+            assert!(crate::exploit::event_valid(e));
+            assert_eq!(e["xmss"]["scheme"], "XMSSMT-SHA2_20/2_256 (WOTS+)");
+            let b = db.read_block_by_height(e["seq"].as_u64().unwrap()).unwrap();
+            db.verify_block(&b).unwrap();
+            let payload = &b.app_events[0];
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&payload.payload_b64)
+                .unwrap();
+            assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), *e);
+            assert_eq!(
+                payload.payload_sha256_hex,
+                hex::encode(sha2::Sha256::digest(&bytes))
+            );
+            let mut bad = e.clone();
+            bad["body"]["data"]["forged"] = json!(true);
+            assert!(!crate::exploit::event_valid(&bad));
+            let mut unsigned = e.clone();
+            unsigned.as_object_mut().unwrap().remove("xmss");
+            assert!(!crate::exploit::event_valid(&unsigned));
+            let mut bad_block = b.clone();
+            bad_block.app_events[0].payload_b64 = "dGFtcGVy".into();
+            assert!(db.verify_block(&bad_block).is_err());
+        }
+    }
+    #[test]
+    fn signed_outcome_without_bound_intent_is_not_authority() {
+        let h = Home::new();
+        append("alice", &h.0.join("custodians/alice"), "dictionary.outcome", json!({
+            "intent_hash":"absent", "op_id":"forged-link", "canonical":true,
+            "command_digest":"absent", "receipt":{"status":"accepted","reason":null,"entry":null}
+        })).unwrap();
+        let before = h.journal().len();
+        assert!(apply(
+            &h.0,
+            "alice",
+            Request {
+                op_id: OperationId("inspect".into()),
+                command: Command::Inspect {
+                    root: ContentRoot("00".repeat(32))
+                }
+            }
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("bound intent"));
+        assert_eq!(h.journal().len(), before);
     }
     #[test]
     fn signer_lock_fails_closed_and_mcp_only_prepares_request() {

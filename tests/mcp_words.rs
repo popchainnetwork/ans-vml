@@ -23,7 +23,7 @@ fn mcp_lists_dictionary_tools_and_refuses_unminted_run() {
     call(1, "initialize", json!({"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0"}}));
     let tools = call(2, "tools/list", json!({}));
     let names: Vec<&str> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-    for n in ["word", "list_words", "mint_request", "run_plan", "run"] { assert!(names.contains(&n), "{names:?}"); }
+    for n in ["word", "list_words", "mint_request", "run_plan", "run", "dictionary_propose"] { assert!(names.contains(&n), "{names:?}"); }
     let w = call(3, "tools/call", json!({"name":"word","arguments":{"word":"RDZEŃ"}}));
     assert_eq!(w["result"]["isError"], false);
     assert!(w["result"]["content"][0]["text"].as_str().unwrap().contains("a8e5657614f0a4721d298b03d9f897bc64e3c4937059ea7a3393b90367a20b52"));
@@ -34,6 +34,11 @@ fn mcp_lists_dictionary_tools_and_refuses_unminted_run() {
     let t: Value = serde_json::from_str(m["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(t["minted"], false);
     assert!(t["request"]["blocking"][0].as_str().unwrap().contains("not minted")); // letters not minted yet
+    let proposed = call(6, "tools/call", json!({"name":"dictionary_propose","arguments":{"op_id":"review-only","command":{"kind":"inspect","root":"a8e5657614f0a4721d298b03d9f897bc64e3c4937059ea7a3393b90367a20b52"}}}));
+    let proposal: Value = serde_json::from_str(proposed["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(proposal["executed"], false);
+    assert_eq!(proposal["signed"], false);
+    assert!(!home.join("custodians").exists(), "MCP proposal must not create a signer");
     drop(stdin);
     child.wait().unwrap();
     let _ = std::fs::remove_dir_all(&home);

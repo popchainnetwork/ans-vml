@@ -4,7 +4,7 @@
 Copyright 2026 Paweł Piekut / Pplastechniek.
 
 **Real CLI and local prototype, not a production OS, hardware VM, public mesh or payment service.**
-ANS VML reuses the ANS dictionary crate, local custodian journal and PopChain database projection. It reads content-addressed word/letter crystals, checks SHA3 Merkle roots, and exposes dictionary operations over CLI and local MCP stdio. This baseline is the existing core, not the finished transactional dictionary writer.
+ANS VML reuses the ANS dictionary crate, local custodian journal and PopChain database projection. It reads content-addressed word/letter crystals, checks SHA3 Merkle roots, and exposes dictionary operations over CLI and local MCP stdio. The dictionary lifecycle service adds an experimental offline draft → validate → mint flow over that same journal; it is not a finished production writer.
 
 ## Build and test
 
@@ -46,7 +46,7 @@ Configure an MCP-capable local client to run the absolute path to `ans mcp` with
 The inherited CLI also has `init`, `alphabet mint`, `mint`, `delegate`, `revoke` and `run` paths. Signing must use fresh disposable test identities only. Existing tests exercise local journal/rule behavior; do not import production identities. Linux processes and localhost services are not hardware-isolated VMs. Local signatures authenticate bytes under keys, not their truth or legal ownership.
 
 Known limitations before a secure public service:
-- XMSSMT is stateful. The current journal/counter does not establish multi-process locking or protection against restoring both counter and journal. Never clone a signing identity between nodes.
+- XMSSMT is stateful. This application now holds an exclusive OS file lock while a custodian is open, and dictionary transactions have a separate cooperative lock. This does not protect direct vendor signer use, copied identity directories or restoration of both counter and journal. Never clone a signing identity between nodes.
 - Journal append and PopChain projection are separate steps; crash recovery and operation-level idempotency need further work.
 - CLI imports, sync logs and builtin runs are not yet a complete mandatory operation-ledger service. Draft/validated/executable lifecycle needs strengthening.
 - Peer identity binding is local-demo only; no production ANS PKI, authenticated global DNS registration, hardware attestation or E2EE claim. Stored messages are plaintext.
@@ -66,3 +66,48 @@ Related references: https://bitxbit.io/ and its linked profile https://x.com/enc
 On Linux x86_64 with rustc 1.99.1, the locked release build succeeded and the standalone workspace test command passed 17 tests (0 failures, 0 ignored). Coverage includes pinned roots, tampering, UCD forms, reproducible import, local rule/mint/delegation/revocation behavior, localhost two-book sync, and MCP lookup/refusal. Vendored cryptography is not independently certified by this count.
 
 A fresh-directory CLI smoke confirmed `book seed` returns `minted: false`, the pinned word root matches, `book list` contains seven sample crystals, and `run hash abc` exits 1 with `letter 'h' (U+0068) is not minted`. This smoke creates no signing identity. It does not establish global mesh, a payment product or production signing safety.
+
+## Offline dictionary lifecycle service
+
+`ans --as alice dictionary apply REQUEST.json` is the new shared typed service entry point. Use a fresh test directory and stop `ans up` before offline writes. An existing local test custodian is required; the service does not initialize one. Do not use real identities or restore old signing state.
+
+An admitted operation is a parseable request with a 1–128 byte `op_id` and an available, explicitly named custodian. JSON/schema errors, unavailable identities and lock contention fail before admission because no safe signer is available; these are not claimed to have ledger receipts. Every admitted invocation, including rejection, inspection and retry, records a signed `dictionary.intent` and `dictionary.outcome` through the existing journal/PopChain projection. Receipt status, not process exit 0, determines domain acceptance. Responses include the signed outcome event, binding the intent hash, command digest and receipt; signature validity does not prove factual truth.
+
+Commands are tagged JSON: `draft` (with `word` and `crystal`), `validate`, `mint`, `inspect`, `run` (with `root`). `word` has `language` and `spelling`; root-bound identity leaves must agree. `validate` means structural checks, not factual truth or legal rights. Blank drafts can be retained but cannot validate. Asset/font adapters are not introduced; asset/font leaves fail validation rather than imply verified external bytes.
+
+Example using the existing public character fixture (Python is only a request-file helper, not the runtime):
+
+```sh
+export ANS_HOME="$(mktemp -d)"
+export ANS_WEB_PORT=37120
+"$ANS" init alice
+python3 - <<'PYREQ'
+import json, os
+from pathlib import Path
+c = json.loads(Path("assets/crystals/u0072.crystal.json").read_text())
+commands = {
+    "draft": {"kind": "draft", "word": {"language": "und", "spelling": "r"}, "crystal": c},
+    "validate": {"kind": "validate", "root": c["root"]},
+    "mint": {"kind": "mint", "root": c["root"]},
+    "inspect": {"kind": "inspect", "root": c["root"]},
+    "run": {"kind": "run", "root": c["root"]},
+}
+for op, command in commands.items():
+    Path(os.environ["ANS_HOME"], op + ".json").write_text(json.dumps({"op_id": op, "command": command}))
+PYREQ
+for op in draft validate mint inspect run; do
+  "$ANS" --as alice dictionary apply "$ANS_HOME/$op.json"
+done
+# Exact same operation ID and command: returns its previous receipt; no second mint.
+"$ANS" --as alice dictionary apply "$ANS_HOME/mint.json"
+```
+
+The first four receipts are accepted; `run` is rejected. This service intentionally has **no executable-permission approval adapter** yet: even a minted entry cannot execute through it. Legacy `ans run`/delegation remain separate older interfaces and are NOT claimed to enforce this new lifecycle. For word minting, every referenced character must already have a native mint in the same local journal. Golden word roots and fixtures remain unchanged.
+
+Same ID + same command replays the original receipt while recording a new attempt; same ID + a different command is rejected. A new ID does not authorize repeating a mint. If an intent lacks a durable outcome on restart, it is closed as `interrupted`, not resumed. If a native mint reached the journal before a crash, the service refuses automatic reconciliation or another mint: manual test-state review is required. No claim of atomicity between journal and kernel, backup rollback resistance or external exactly-once effects is made.
+
+Accepted entry state is replayed from signed outcomes. Book files are a rebuildable cache; missing files are restored on subsequent admitted operations, while corrupt/conflicting files fail closed rather than being overwritten.
+
+MCP `dictionary_propose` parses the **same Request type** and returns an unsigned, unexecuted envelope for explicit custodian CLI review. It never invokes the signer or silently approves a model request. Existing lookup/planning tools are retained.
+
+All new documentation is English. Existing inherited localized messages are not broadly rewritten. Stripe remains deferred until product testing; no Stripe integration is included.

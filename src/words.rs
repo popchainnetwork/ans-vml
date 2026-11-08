@@ -190,6 +190,7 @@ fn origins(root: &Path) -> std::collections::HashMap<String, Value> {
 pub fn mcp_tools() -> Vec<Value> {
     let w = json!({"type":"object","properties":{"word":{"type":"string"}},"required":["word"]});
     vec![
+        json!({"name":"dictionary_propose","description":"Prepare a typed dictionary lifecycle request for explicit offline custodian approval; never signs or executes","inputSchema":{"type":"object","properties":{"op_id":{"type":"string"},"command":{"type":"object"}},"required":["op_id","command"]}}),
         json!({"name":"word","description":"Look up a word crystal in the local book (any translation/form, diacritic-insensitive); root is re-verified","inputSchema":w}),
         json!({"name":"list_words","description":"List crystals in the local book with their mint block (null = unminted)","inputSchema":{"type":"object","properties":{}}}),
         json!({"name":"mint_request","description":"Propose minting a word: runs the rule dry and queues a request. Does NOT mint; the custodian must run `ans mint`","inputSchema":w}),
@@ -202,6 +203,7 @@ pub fn mcp_call(name: &str, a: &Value, root: &Path, actor: &str) -> Option<Resul
     let w = a["word"].as_str().unwrap_or("").to_string();
     let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     Some(match name {
+        "dictionary_propose" => crate::dictionary::proposal(a.clone()),
         "word" => book(root).and_then(|b| find(&b, &w)).map(|c| json!({"word":c.id,"root":c.root,"index":c.index(),"leaves":c.leaves.len(),
             "senses":c.of_kind("sense").take(8).map(|l| l.to_value()).collect::<Vec<_>>(),"translations":c.of_kind("translation").take(20).map(|l| l.to_value()).collect::<Vec<_>>(),"exec":c.of_kind("exec").map(|l| l.to_value()).collect::<Vec<_>>()})),
         "list_words" => handle("book", &argv(&["book", "list"]), root, actor).map(Option::unwrap),

@@ -189,9 +189,89 @@ On Linux x86_64 with rustc 1.99.1, the locked release build succeeded and the st
 
 A fresh-directory CLI smoke confirmed `book seed` returns `minted: false`, the pinned word root matches, `book list` contains seven sample crystals, and `run hash abc` exits 1 with `letter 'h' (U+0068) is not minted`. This smoke creates no signing identity. It does not establish global mesh, a payment product or production signing safety.
 
+## Friendly owner commands — no handwritten request JSON
+
+Owner commands explicitly sign intent/outcome events using an existing selected
+local test custodian. They use the **same typed apply engine**, transaction lock,
+strict replay, native mint events and operation-ID rules as `dictionary apply`.
+There is no second ledger or signing engine.
+
+```sh
+"$ANS" dictionary --help
+"$ANS" --as alice dictionary draft assets/crystals/rdzen.crystal.json --operation-id word-draft
+"$ANS" --as alice dictionary validate rdzen --operation-id word-validate
+"$ANS" --as alice dictionary mint rdzen --operation-id word-mint
+"$ANS" --as alice dictionary inspect rdzen
+```
+
+The short example assumes its character dependencies are already minted; use the
+complete fresh bootstrap below when starting from nothing.
+
+Draft reads one regular crystal file (at most 8 MiB), checks its Merkle root and
+root-bound identity, and derives the spelling/language from that identity. It stays
+Draft; validation and mint remain separate explicit steps. Invalid files/arguments
+are rejected before signing or identity creation. Queries accept a word, character,
+translation/form or exact content root; ambiguous names require a root. Resolution
+runs against the authoritative lifecycle **after recovery**, never a cache-only
+claim. Unknown literal roots can receive signed rejection receipts; unknown names
+fail before new admission because no unique command root can be prepared.
+
+Omitting `--operation-id` generates a fresh 128-bit OS-random `cli-…` ID, printed
+in `op_id`. Keep it to retry exactly that operation. Same ID + same typed command
+returns the original receipt without repeating effects; a different command is a
+signed rejection. A retry can show an old Draft receipt after the entry has since
+minted: use read-only `show` for current state. As with the existing apply engine,
+exit 0 means the invocation was admitted; **check `receipt.status` for acceptance**.
+Pre-admission parse/signer errors exit nonzero. Public signatures/keys are included
+for verification; secret seed/counter data is never printed.
+
+`inspect` is an owner operation and signs a receipt. `show`, `list`, `export`,
+`verify` and the isolated `serve` mode remain read-only and never open a signer.
+Mint does not enable execution. The legacy top-level `ans mint`, `mint-alphabet`,
+`delegate`, `run`, and related mutation paths have not been silently redefined or
+migrated; do not use them as substitutes for this lifecycle walkthrough.
+
+### Fresh disposable bootstrap and the native rdzeń flow
+
+From the repository root after building, this uses only direct commands and public
+fixtures. The loop is the finite five-character demo alphabet needed by `rdzeń`,
+not a claim to mint all languages or the entire Unicode alphabet. No JSON request
+file or private identity import is needed.
+
+```sh
+export ANS_HOME="$(mktemp -d)"
+export ANS_WEB_PORT=43170
+"$ANS" init alice
+"$ANS" --as alice dictionary draft assets/crystals/rdzen.crystal.json --operation-id word-draft
+"$ANS" --as alice dictionary validate rdzen --operation-id word-validate
+# Expected signed rejection: its characters have not yet completed their lifecycles.
+"$ANS" --as alice dictionary mint rdzen --operation-id word-before-letters
+for spec in r:u0072 d:u0064 z:u007a e:u0065 ń:u0144; do
+  character="${spec%%:*}"
+  file="${spec#*:}"
+  "$ANS" --as alice dictionary draft "assets/crystals/$file.crystal.json" --operation-id "$file-draft"
+  "$ANS" --as alice dictionary validate "$character" --operation-id "$file-validate"
+  "$ANS" --as alice dictionary mint "$character" --operation-id "$file-mint"
+done
+"$ANS" --as alice dictionary mint rdzen --operation-id word-mint
+"$ANS" --as alice dictionary inspect rdzen
+# Exact retry: same original receipt, no second word mint.
+"$ANS" --as alice dictionary mint rdzen --operation-id word-mint
+"$ANS" --as alice dictionary show rdzen
+"$ANS" --as alice dictionary list
+# Pin the independently obtained public signer key before exporting/verifying.
+"$ANS" --as alice dictionary export rdzen --expect-key "$EXPECTED_PK" > rdzen.proof.json
+"$ANS" dictionary verify rdzen.proof.json --expect-key "$EXPECTED_PK"
+```
+
+The pinned word root remains
+`a8e5657614f0a4721d298b03d9f897bc64e3c4937059ea7a3393b90367a20b52`.
+All five character roots are unchanged. This bootstraps only a disposable local
+experimental custodian; it is not production XMSS backup/rollback safety.
+
 ## Offline dictionary lifecycle service
 
-`ans --as alice dictionary apply REQUEST.json` is the new shared typed service entry point. Use a fresh test directory and stop `ans up` before offline writes. An existing local test custodian is required; the service does not initialize one. Do not use real identities or restore old signing state.
+`ans --as alice dictionary apply REQUEST.json` remains the advanced typed service entry point; the friendly commands above prepare that same request type. Use a fresh test directory and stop `ans up` before offline writes. An existing local test custodian is required; the service does not initialize one. Do not use real identities or restore old signing state.
 
 An admitted operation is a parseable request with a 1–128 byte `op_id` and an available, explicitly named custodian. JSON/schema errors, unavailable identities, lock contention and canonical outcomes without matching preceding intents fail before admission because no safe signer is available; these are not claimed to have ledger receipts. Every admitted invocation, including rejection, inspection and retry, records a signed `dictionary.intent` and `dictionary.outcome` through the existing journal/PopChain projection. Receipt status, not process exit 0, determines domain acceptance. Responses include the signed outcome event, binding the intent hash, command digest and receipt; signature validity does not prove factual truth.
 
@@ -226,7 +306,7 @@ done
 
 The first four receipts are accepted; `run` is rejected. This service intentionally has **no executable-permission approval adapter** yet: even a minted entry cannot execute through it. Legacy `ans run`/delegation remain separate older interfaces and are NOT claimed to enforce this new lifecycle. For word minting, every referenced character must already have a native mint in the same local journal. Golden word roots and fixtures remain unchanged.
 
-Same ID + same command replays the original receipt while recording a new attempt; same ID + a different command is rejected. A new ID does not authorize repeating a mint. If an intent lacks a durable outcome on restart, it is closed as `interrupted`, not resumed. If a native mint reached the journal before a crash, the service refuses automatic reconciliation or another mint: manual test-state review is required. No claim of atomicity between journal and kernel, backup rollback resistance or external exactly-once effects is made.
+Same ID + same command replays the original receipt while recording a new attempt; same ID + a different command is rejected. A new ID does not authorize repeating a mint. If a canonical first intent lacks a durable outcome on restart, it is closed as `interrupted`, not resumed. An unfinished same-command retry instead receives the completed original receipt (Accepted, Rejected or Interrupted); an unfinished conflicting retry is Rejected. Recovery validates the original completed prefix and never repeats native effects. Already-signed incompatible historical recovery outcomes are not rewritten or automatically repaired; strict replay still refuses them. If a native mint reached the journal before a crash, the service refuses automatic reconciliation or another mint: manual test-state review is required. No claim of atomicity between journal and kernel, backup rollback resistance or external exactly-once effects is made.
 
 Accepted entry state is replayed from signed outcomes. Writer admission and public snapshots now share strict semantic replay: accepted receipt state is independently re-evaluated against command/intent linkage, immutable content, legal transitions and exact native mint effects. Word dependencies must already be verified minted in the same custodian history before the word-mint intent. Legacy signed receipts that lack these dependencies are refused, not silently migrated or granted authority. The service emits linked native mint/outcome events; tests verify their XMSSMT/WOTS+ signatures and exact PopChain application payload binding. The outer PopChain block is not separately signed by this writer. Do not expose generic legacy signed-event admission as a lifecycle bypass.
 
@@ -278,3 +358,25 @@ oversized requests, wrong anchors and unchanged public input bytes. Additional
 parser/source tests cover rebinding/cross-origin/body refusal and safe local DOM
 rendering. `node --check assets/dictionary-visitor.js` succeeds. These checks do not
 replace the separately pending browser/phone visual review.
+
+### Owner CLI and recovery increment verification
+
+Locked release build succeeds and **39 tests pass**, preserving all previous 35.
+New tests cover direct owner lifecycle commands, early mint refusal, retry/conflict
+receipts, OS-random unique IDs, malformed arguments/files and absent signers without
+identity creation, read-only invariance, and the interrupted-retry regression.
+
+The retry contradiction was actually reproduced on baseline `7c5abed`: unfinished
+noncanonical accepted/rejected retries recovered as Interrupted, then strict replay
+refused their changed receipts; an unfinished conflicting retry likewise recovered
+incorrectly. The fix was exercised on fresh signed intent-only crash prefixes in
+separate CLI processes: exact retries preserve their Accepted/Rejected original
+receipts, conflicting retries become Rejected, subsequent operations work, and native
+mint counts do not change. A rejected original remains rejected even after its entry
+later becomes minted. Canonical first-attempt interruption remains conservative.
+
+A separate fresh bootstrap smoke uses zero JSON request files: direct commands mint
+the five pinned characters and `rdzeń`, reject early mint/conflicting IDs, replay
+exact IDs, print distinct automatic IDs and export a 42-event word proof that verifies
+with five dependencies. Read-only commands work with signer files removed and writer
+lock held, leaving files byte-identical. No visitor/networking change is included.

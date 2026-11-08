@@ -183,7 +183,15 @@ fn evaluate(
 /// Admission requires a parseable envelope and existing disposable/offline custodian.
 /// Every admitted attempt (including retry/conflict/rejection) gets intent + outcome.
 pub fn apply(root: &Path, owner: &str, req: Request) -> Result<Value> {
-    if req.op_id.0.is_empty() || req.op_id.0.len() > 128 {
+    transact(root, owner, req.op_id, |_| Ok(req.command))
+}
+fn transact(
+    root: &Path,
+    owner: &str,
+    op_id: OperationId,
+    prepare: impl FnOnce(&BTreeMap<String, Entry>) -> Result<Command>,
+) -> Result<Value> {
+    if op_id.0.is_empty() || op_id.0.len() > 128 {
         bail!("Operation ID must contain 1–128 bytes");
     }
     if owner.is_empty()
@@ -222,11 +230,13 @@ pub fn apply(root: &Path, owner: &str, req: Request) -> Result<Value> {
         .cloned()
         .collect();
     for intent in pending {
-        finish(
-            owner,
-            &dir,
-            &intent,
-            &Receipt {
+        let request: Request = serde_json::from_value(data(&intent)["request"].clone())?;
+        let digest = hash(&serde_json::to_value(&request.command)?)?;
+        if data(&intent)["command_digest"] != digest {
+            bail!("Pending intent command digest mismatch");
+        }
+        let receipt = match data(&intent)["canonical"].as_bool() {
+            Some(true) => Receipt {
                 status: Status::Interrupted,
                 reason: Some(
                     "Previous attempt has no durable outcome; effects are not resumed or inferred"
@@ -234,9 +244,27 @@ pub fn apply(root: &Path, owner: &str, req: Request) -> Result<Value> {
                 ),
                 entry: None,
             },
-        )?;
+            Some(false) => {
+                let index=journal.iter().position(|e|action(e)=="dictionary.outcome" && data(e)["canonical"]==true && data(e)["op_id"]==request.op_id.0).ok_or_else(||anyhow!("Interrupted retry has no completed original receipt; refusing to infer effects"))?;
+                // Authenticate and replay the completed original before copying a receipt.
+                crate::dictionary_read::replay_verified(&journal[..=index])?;
+                let original = &journal[index];
+                if data(original)["command_digest"] != digest {
+                    rejected("Operation ID is already bound to a different command")
+                } else {
+                    serde_json::from_value(data(original)["receipt"].clone())?
+                }
+            }
+            None => bail!("Pending intent is missing its canonical flag"),
+        };
+        journal.push(finish(owner, &dir, &intent, &receipt)?);
     }
     journal = crate::exploit::journal(owner, &dir)?;
+    let entries = crate::dictionary_read::writer_entries(root, owner, &journal)?;
+    let req = Request {
+        op_id,
+        command: prepare(&entries)?,
+    };
     let digest = hash(&serde_json::to_value(&req.command)?)?;
     let prior = journal.iter().find(|e| {
         action(e) == "dictionary.outcome"
@@ -244,7 +272,6 @@ pub fn apply(root: &Path, owner: &str, req: Request) -> Result<Value> {
             && data(e)["op_id"] == req.op_id.0
     });
     let canonical = prior.is_none();
-    let entries = crate::dictionary_read::writer_entries(root, owner, &journal)?;
     let intent = append(
         owner,
         &dir,
@@ -286,11 +313,159 @@ pub fn proposal(value: Value) -> Result<Value> {
         json!({"request":request,"executed":false,"signed":false,"next":"Custodian reviews and invokes ans dictionary apply REQUEST.json with explicit --as"}),
     )
 }
+pub const HELP: &str = "ANS dictionary — local experimental lifecycle
+
+Read-only (no signer or identity creation):
+  ans dictionary list
+  ans [--as OWNER] dictionary show WORD_OR_ROOT
+  ans --as OWNER dictionary export WORD_OR_ROOT --expect-key HEX
+  ans dictionary verify PROOF_FILE --expect-key HEX
+  ans dictionary serve PROOF_FILE --expect-key HEX [--port N]
+
+Owner commands SIGN journal intent/outcome events (existing disposable --as required):
+  ans --as OWNER dictionary draft CRYSTAL_FILE [--operation-id ID]
+  ans --as OWNER dictionary validate WORD_OR_ROOT [--operation-id ID]
+  ans --as OWNER dictionary mint WORD_OR_ROOT [--operation-id ID]
+  ans --as OWNER dictionary inspect WORD_OR_ROOT [--operation-id ID]
+
+Draft checks Merkle/identity bytes but stays Draft; validate is a separate structural step.
+Mint requires Validated state and verified minted characters; mint is not execution permission.
+Inspect signs a receipt; show/list are read-only alternatives.
+IDs omitted on owner commands are generated with OS randomness and printed as op_id.
+Reuse --operation-id for retries: same command returns its original receipt; a different
+command is rejected. Use show for current state, since a retry returns its old receipt.
+Advanced typed entry point: ans --as OWNER dictionary apply REQUEST.json.
+Admitted calls return receipts even when rejected: check receipt.status, not just exit 0.
+Receipts include public signatures/keys, never secret signer seed or counter data.
+This service never initializes identities. Use only fresh offline test identities.
+";
+fn operation_id(explicit: Option<&str>) -> Result<OperationId> {
+    let id = if let Some(id) = explicit {
+        id.to_owned()
+    } else {
+        use rand::RngCore;
+        let mut bytes = [0u8; 16];
+        rand::rngs::OsRng
+            .try_fill_bytes(&mut bytes)
+            .map_err(|e| anyhow!("Cannot generate an operation ID: {e}"))?;
+        format!("cli-{}", hex::encode(bytes))
+    };
+    if id.is_empty() || id.len() > 128 {
+        bail!("Operation ID must contain 1–128 bytes");
+    }
+    Ok(OperationId(id))
+}
+fn draft_file(path: &str) -> Result<Command> {
+    use std::io::Read;
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| anyhow!("Cannot read crystal file '{path}'"))?;
+    if !metadata.file_type().is_file() {
+        bail!("Draft needs a regular crystal file, not a directory or symlink");
+    }
+    const LIMIT: u64 = 8 * 1024 * 1024;
+    if metadata.len() > LIMIT {
+        bail!("Crystal file exceeds the owner CLI's 8 MiB limit");
+    }
+    let mut text = String::new();
+    std::fs::File::open(path)?
+        .take(LIMIT + 1)
+        .read_to_string(&mut text)?;
+    if text.len() as u64 > LIMIT {
+        bail!("Crystal file exceeds the owner CLI's 8 MiB limit");
+    }
+    let c = Crystal::parse(&text).map_err(|e| anyhow!("Crystal content was not admitted: {e}"))?;
+    let identity = c
+        .of_kind("identity")
+        .next()
+        .ok_or_else(|| anyhow!("Crystal requires a root-bound identity"))?;
+    let language = identity
+        .get("lang")
+        .or(identity.get("language"))
+        .or_else(|| (c.kind == CrystalKind::Letter).then_some("und"))
+        .ok_or_else(|| anyhow!("Word crystal needs a root-bound identity language"))?;
+    Ok(Command::Draft {
+        word: WordId {
+            language: language.into(),
+            spelling: c.id.clone(),
+        },
+        crystal: serde_json::from_str(&text)?,
+    })
+}
+fn resolve(entries: &BTreeMap<String, Entry>, query: &str) -> Result<ContentRoot> {
+    if query.len() == 64 && query.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Ok(ContentRoot(query.to_ascii_lowercase()));
+    }
+    let matches = entries
+        .values()
+        .filter(|e| {
+            Crystal::parse(&e.crystal.to_string())
+                .is_ok_and(|c| crate::dictionary_read::matches(&c, query))
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        bail!("Expected one lifecycle entry for '{query}', found {}; draft it first or use an exact content root",matches.len());
+    }
+    Ok(matches[0].root.clone())
+}
 pub fn cli(root: &Path, owner: &str, args: &[String]) -> Result<Value> {
-    if args.first().is_some_and(|a| a != "apply") {
+    if args.is_empty()
+        || args.iter().any(|a| matches!(a.as_str(), "--help" | "-h"))
+        || args[0] == "help"
+    {
+        return Ok(json!({"help":HELP,"signer_opened":false}));
+    }
+    let command = args[0].as_str();
+    if matches!(command, "draft" | "validate" | "mint" | "inspect") {
+        if args.len() != 2 && args.len() != 4 {
+            bail!("Usage: dictionary {command} TARGET [--operation-id ID]; use dictionary --help");
+        }
+        let explicit = if args.len() == 4 {
+            if args[2] != "--operation-id" {
+                bail!("Only --operation-id ID is accepted after the target");
+            }
+            Some(args[3].as_str())
+        } else {
+            None
+        };
+        if owner.is_empty() {
+            bail!("Owner commands sign journal events; pass --as OWNER for an existing disposable offline identity. For read-only access use dictionary show/list");
+        }
+        let target = args[1].trim();
+        if target.is_empty() || target.starts_with('-') {
+            bail!("An explicit target is required; use dictionary --help");
+        }
+        let id = operation_id(explicit)?;
+        if command == "draft" {
+            return apply(
+                root,
+                owner,
+                Request {
+                    op_id: id,
+                    command: draft_file(target)?,
+                },
+            );
+        }
+        if target.len() > 1024
+            || target
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '/' | '\\'))
+        {
+            bail!("Entry target must be a word/character or content root, not a file path");
+        }
+        return transact(root, owner, id, |entries| {
+            let root = resolve(entries, target)?;
+            Ok(match command {
+                "validate" => Command::Validate { root },
+                "mint" => Command::Mint { root },
+                "inspect" => Command::Inspect { root },
+                _ => unreachable!(),
+            })
+        });
+    }
+    if command != "apply" {
         return crate::dictionary_read::cli(root, owner, args);
     }
-    if args.len() != 2 || args[0] != "apply" {
+    if args.len() != 2 {
         bail!("Usage: ans --as OWNER dictionary apply REQUEST.json");
     }
     apply(
@@ -447,6 +622,287 @@ mod tests {
         alias["character"] = json!("d");
         assert_eq!(status(&h.apply("identity-alias", draft(alias))), "rejected");
         assert!(h.journal().iter().all(crate::exploit::event_valid));
+    }
+    fn cli_args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+    fn public_files(root: &Path) -> BTreeMap<std::path::PathBuf, Vec<u8>> {
+        fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<std::path::PathBuf, Vec<u8>>) {
+            for file in std::fs::read_dir(dir).unwrap() {
+                let path = file.unwrap().path();
+                if path.is_dir() {
+                    walk(root, &path, out)
+                } else {
+                    out.insert(
+                        path.strip_prefix(root).unwrap().into(),
+                        std::fs::read(path).unwrap(),
+                    );
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        walk(root, root, &mut out);
+        out
+    }
+    #[test]
+    fn friendly_owner_cli_preserves_typed_receipts_retry_and_read_only_boundaries() {
+        let h = Home::new();
+        let fixture = h.0.join("a.crystal.json");
+        std::fs::write(&fixture, crystal("a", true).to_string()).unwrap();
+        let first = cli(
+            &h.0,
+            "alice",
+            &cli_args(&[
+                "draft",
+                fixture.to_str().unwrap(),
+                "--operation-id",
+                "draft",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(status(&first), "accepted");
+        let early = cli(
+            &h.0,
+            "alice",
+            &cli_args(&["mint", "a", "--operation-id", "early"]),
+        )
+        .unwrap();
+        assert_eq!(status(&early), "rejected");
+        let validated = cli(
+            &h.0,
+            "alice",
+            &cli_args(&["validate", "a", "--operation-id", "validate"]),
+        )
+        .unwrap();
+        assert_eq!(status(&validated), "accepted");
+        let conflict = cli(
+            &h.0,
+            "alice",
+            &cli_args(&["mint", "a", "--operation-id", "draft"]),
+        )
+        .unwrap();
+        assert_eq!(status(&conflict), "rejected");
+        assert_eq!(conflict["retry"], true);
+        let minted = cli(
+            &h.0,
+            "alice",
+            &cli_args(&["mint", "a", "--operation-id", "mint"]),
+        )
+        .unwrap();
+        assert_eq!(minted["receipt"]["entry"]["state"], "minted");
+        let retry = cli(
+            &h.0,
+            "alice",
+            &cli_args(&["mint", "a", "--operation-id", "mint"]),
+        )
+        .unwrap();
+        assert_eq!(retry["retry"], true);
+        assert_eq!(retry["receipt"], minted["receipt"]);
+        let one = cli(&h.0, "alice", &cli_args(&["inspect", "a"])).unwrap();
+        let two = cli(&h.0, "alice", &cli_args(&["inspect", "a"])).unwrap();
+        assert_ne!(one["op_id"], two["op_id"]);
+        assert!(one["op_id"].as_str().unwrap().starts_with("cli-"));
+        let journal = h.journal();
+        assert_eq!(
+            journal.iter().filter(|e| action(e) == "word.mint").count(),
+            1
+        );
+        for value in [&first, &minted, &one] {
+            let text = value.to_string();
+            assert!(
+                !text.contains("xmss-demo.seed")
+                    && !text.contains("xmss-demo.state")
+                    && !text.contains("private_key")
+            );
+        }
+        for file in ["xmss-demo.seed", "xmss-demo.state"] {
+            std::fs::remove_file(h.0.join("custodians/alice").join(file)).unwrap();
+        }
+        let before = public_files(&h.0);
+        let shown = cli(&h.0, "alice", &cli_args(&["show", "a"])).unwrap();
+        assert_eq!(shown["lifecycle"], "minted");
+        assert_eq!(
+            cli(&h.0, "alice", &cli_args(&["list"])).unwrap()["read_only"],
+            true
+        );
+        assert_eq!(
+            cli(&h.0, "", &cli_args(&["--help"])).unwrap()["signer_opened"],
+            false
+        );
+        assert_eq!(public_files(&h.0), before);
+    }
+    #[test]
+    fn friendly_parse_and_missing_signer_never_create_identity_state() {
+        let scratch = std::env::temp_dir().join(format!(
+            "ans-owner-parse-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let root = scratch.join("not-created");
+        let valid = scratch.join("valid.json");
+        std::fs::write(&valid, crystal("a", true).to_string()).unwrap();
+        let invalid = scratch.join("invalid.json");
+        std::fs::write(&invalid, "not a crystal").unwrap();
+        let missing = scratch.join("missing.json");
+        assert!(cli(&root, "", &cli_args(&["draft", valid.to_str().unwrap()])).is_err());
+        for path in [&valid, &invalid, &missing, &scratch] {
+            assert!(cli(
+                &root,
+                "alice",
+                &cli_args(&["draft", path.to_str().unwrap()])
+            )
+            .is_err());
+            assert!(!root.exists());
+        }
+        let too_large = scratch.join("large.json");
+        std::fs::File::create(&too_large)
+            .unwrap()
+            .set_len(8 * 1024 * 1024 + 1)
+            .unwrap();
+        assert!(cli(
+            &root,
+            "alice",
+            &cli_args(&["draft", too_large.to_str().unwrap()])
+        )
+        .is_err());
+        for args in [
+            vec!["mint"],
+            vec!["mint", "../secret"],
+            vec!["mint", "a", "--other", "value"],
+            vec!["mint", "a", "--operation-id"],
+            vec!["mint", "a", "--operation-id", ""],
+        ] {
+            assert!(cli(&root, "alice", &cli_args(&args)).is_err());
+            assert!(!root.exists());
+        }
+        assert_eq!(
+            cli(&root, "", &cli_args(&["--help"])).unwrap()["signer_opened"],
+            false
+        );
+        assert!(!root.exists());
+        std::fs::remove_dir_all(scratch).unwrap();
+    }
+    #[test]
+    fn auto_operation_ids_are_unique_and_explicit_ids_are_stable() {
+        let mut ids = std::collections::BTreeSet::new();
+        for _ in 0..256 {
+            let id = operation_id(None).unwrap();
+            assert_eq!(id.0.len(), 36);
+            assert!(ids.insert(id.0));
+        }
+        assert_eq!(operation_id(Some("retry-this")).unwrap().0, "retry-this");
+        assert!(operation_id(Some("")).is_err());
+        assert!(operation_id(Some(&"x".repeat(129))).is_err());
+    }
+    #[test]
+    fn interrupted_retry_recovery_regressions() {
+        for case in ["accepted", "rejected", "conflict"] {
+            let h = Home::new();
+            let c = crystal("a", true);
+            let r = root(&c);
+            let original_command = if case == "rejected" {
+                Command::Inspect { root: r.clone() }
+            } else {
+                h.apply("draft", draft(c.clone()));
+                h.apply("validate", Command::Validate { root: r.clone() });
+                Command::Mint { root: r.clone() }
+            };
+            let original = h.apply("original", original_command.clone());
+            if case == "rejected" {
+                // The old rejection must remain rejected even though a fresh inspect
+                // would now succeed after the entry is created and minted.
+                h.apply("later-draft", draft(c));
+                h.apply("later-validate", Command::Validate { root: r.clone() });
+                h.apply("later-mint", Command::Mint { root: r.clone() });
+            }
+
+            let retry_command = if case == "conflict" {
+                Command::Inspect { root: r.clone() }
+            } else {
+                original_command
+            };
+            let request = Request {
+                op_id: OperationId("original".into()),
+                command: retry_command,
+            };
+            let digest = hash(&serde_json::to_value(&request.command).unwrap()).unwrap();
+            let intent = append(
+                "alice",
+                &h.0.join("custodians/alice"),
+                "dictionary.intent",
+                json!({"request":request,"command_digest":digest,"canonical":false}),
+            )
+            .unwrap();
+            let before = h
+                .journal()
+                .iter()
+                .filter(|e| action(e) == "word.mint")
+                .count();
+            let target = "a".to_string();
+            let binary = std::env::var("ANS_RECOVERY_SMOKE_BINARY").ok();
+            let result = if let Some(binary) = binary.as_ref() {
+                let output = std::process::Command::new(binary)
+                    .args([
+                        "--data",
+                        h.0.to_str().unwrap(),
+                        "--as",
+                        "alice",
+                        "dictionary",
+                        "inspect",
+                        &target,
+                        "--operation-id",
+                        "after-crash",
+                    ])
+                    .output()
+                    .unwrap();
+                if output.status.success() {
+                    serde_json::from_slice::<Value>(&output.stdout).map_err(anyhow::Error::from)
+                } else {
+                    Err(anyhow!(String::from_utf8_lossy(&output.stderr).into_owned()))
+                }
+            } else {
+                cli(
+                    &h.0,
+                    "alice",
+                    &[
+                        "inspect".into(),
+                        target,
+                        "--operation-id".into(),
+                        "after-crash".into(),
+                    ],
+                )
+            };
+            let events = h.journal();
+            let recovered = events
+                .iter()
+                .find(|e| {
+                    action(e) == "dictionary.outcome" && data(e)["intent_hash"] == intent["hash"]
+                })
+                .unwrap();
+            println!(
+                "RECOVERY_EVIDENCE {}",
+                json!({"case":case,"surface":if binary.is_some(){"external_cli"}else{"in_process_cli"},"original_status":original["receipt"]["status"],"recovered_status":data(recovered)["receipt"]["status"],"error":result.as_ref().err().map(ToString::to_string),"native_mints_before":before,"native_mints_after":events.iter().filter(|e|action(e)=="word.mint").count()})
+            );
+            assert!(
+                result.is_ok(),
+                "Recovered retry must not poison strict replay: {result:?}"
+            );
+            let expected = if case == "conflict" {
+                "rejected"
+            } else {
+                original["receipt"]["status"].as_str().unwrap()
+            };
+            assert_eq!(data(recovered)["receipt"]["status"], expected);
+            if case != "conflict" {
+                assert_eq!(data(recovered)["receipt"], original["receipt"]);
+            }
+            assert_eq!(
+                events.iter().filter(|e| action(e) == "word.mint").count(),
+                before
+            );
+            assert!(crate::dictionary_read::replay_verified(&events).is_ok());
+        }
     }
     #[test]
     fn interrupted_intent_is_closed_without_resuming_effect() {

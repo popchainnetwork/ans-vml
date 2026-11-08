@@ -54,7 +54,7 @@ fn normalize(s: &str) -> Result<String> {
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
     {
-        bail!("Słowo: 3–63 małe litery, cyfry i myślnik")
+        bail!("Owner name must contain 3–63 lowercase ASCII letters, digits, or hyphens")
     };
     Ok(w.into())
 }
@@ -543,10 +543,11 @@ fn run() -> Result<()> {
     }
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     if cmd == "help" || cmd == "--help" {
-        println!("ans init|install <word> | grow --plan|--apply [--hosts hosts.toml] | up | status | chat [to text] | skill list|add|grant|revoke|run | node [resolve /word/channel] | book resolve <word> | attest | word <slowo> [--lang pl|en|nl | --crystal] | boot --plan | book seed|add|list|import-kaikki|serve --port N | mint <word>|--all | delegate|revoke <word> <scope> | run <word> [--plan] [input] | sync http://127.0.0.1:PORT | licenses | inventory\nDictionary: dictionary list | show WORD_OR_ROOT | export WORD_OR_ROOT --expect-key HEX | verify PROOF_FILE --expect-key HEX | apply REQUEST.json (writes require explicit --as custodian).\nGlobal: --data DIR --as WORD. LOCAL DEMO; Apache-2.0 core; paid modules excluded.");
+        println!("ans init|install <word> | grow --plan|--apply [--hosts hosts.toml] | up | status | chat [to text] | skill list|add|grant|revoke|run | node [resolve /word/channel] | book resolve <word> | attest | word <slowo> [--lang pl|en|nl | --crystal] | boot --plan | book seed|add|list|import-kaikki|serve --port N | mint <word>|--all | delegate|revoke <word> <scope> | run <word> [--plan] [input] | sync http://127.0.0.1:PORT | licenses | inventory\nDictionary: dictionary --help. Read-only list/show/export/verify/serve; owner draft/validate/mint/inspect TARGET [--operation-id ID] require explicit --as and sign journal events. Advanced: apply REQUEST.json.\nGlobal: --data DIR --as WORD. LOCAL DEMO; Apache-2.0 core; paid modules excluded.");
         return Ok(());
     }
     if cmd == "dictionary" {
+        if args.len()==1 || args[1]=="help" || args[1..].iter().any(|a|matches!(a.as_str(),"--help"|"-h")){println!("{}",dictionary::HELP);return Ok(());}
         out(dictionary::cli(&root, &actor, &args[1..])?);
         return Ok(());
     }

@@ -1,0 +1,5 @@
+/target/
+/ans-data/
+/.cargo-home/
+.env
+*.journal

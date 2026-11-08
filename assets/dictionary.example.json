@@ -1,0 +1,25 @@
+{
+  "schema": "ans-dictionary/0.1",
+  "license": "Apache-2.0",
+  "note": "EXAMPLE ENTRIES ONLY. Override with <ANS_HOME>/dictionary.json. custodian_value is illustrative, not a price or token.",
+  "entries": [
+    {"word":"exploit","example":true,
+     "translations":{"pl":"exploit","en":"exploit","nl":"exploit"},
+     "meaning":{
+       "pl":"W ANS: lokalny program custodiana w Rust (bot/agent, superstan, pierwszy walidator jego L1). Ogólnie: wykorzystanie luki.",
+       "en":"In ANS: a custodian's local Rust program (bot/agent, superstate, first validator of its L1). General: use of a vulnerability.",
+       "nl":"In ANS: het lokale Rust-programma van een custodian (bot/agent, superstate, eerste validator van zijn L1). Algemeen: misbruik van een kwetsbaarheid."},
+     "sources":["ans-product/core/src/exploit.rs","general dictionary usage"],
+     "custodian_value":{"custodian":"local","value":1}},
+    {"word":"custodian","example":true,
+     "translations":{"pl":"kustosz","en":"custodian","nl":"bewaarder"},
+     "meaning":{"pl":"Właściciel własnej księgi i łańcucha; podpisuje swoje kroki.","en":"Owner of its own book and chain; signs its own steps.","nl":"Eigenaar van een eigen boek en keten; ondertekent eigen stappen."},
+     "sources":["ans-product/README.md"],
+     "custodian_value":{"custodian":"local","value":1}},
+    {"word":"ksiega","example":true,
+     "translations":{"pl":"księga","en":"book","nl":"boek"},
+     "meaning":{"pl":"Wspólny słownik ANS, który ma każdy węzeł.","en":"The shared ANS dictionary every node holds.","nl":"Het gedeelde ANS-woordenboek dat elk knooppunt heeft."},
+     "sources":["ans-data/book.json"],
+     "custodian_value":{"custodian":"local","value":1}}
+  ]
+}

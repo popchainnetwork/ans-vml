@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+# Public core: localhost only; no model, hosting, marketplace or payment modules.
+replicas=1
+[[hosts]]
+name="local"
+address="127.0.0.1"
+enabled=true
+roles=["node","book","state"]

@@ -1,0 +1,60 @@
+{
+  "schema": "ans-character-crystal-v1",
+  "character": "r",
+  "root": "3eb51ba67c27a8f0ecea88d7909035543a120c47e1cb25ee68e0b72ce31c7001",
+  "index": "ans:character:sha3-256:3eb51ba67c27a8f0ecea88d7909035543a120c47e1cb25ee68e0b72ce31c7001",
+  "complete": false,
+  "minted": false,
+  "signed": false,
+  "gaps": [
+    "No cross-script equivalence guessed: UCD script metadata does not establish transliteration or phonetic equivalence.",
+    "No phonetic value inferred; letter pronunciation depends on language."
+  ],
+  "leaves": [
+    {
+      "kind": "character",
+      "value": "r",
+      "codepoint": "U+0072",
+      "name": "LATIN SMALL LETTER R",
+      "category": "Ll",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt"
+    },
+    {
+      "kind": "form",
+      "form": "International_Morse",
+      "value": ".-.",
+      "source": "https://www.itu.int/rec/R-REC-M.1677-1-200910-I/en"
+    },
+    {
+      "kind": "form",
+      "form": "Polish_Braille_uncontracted",
+      "value": "⠗",
+      "source": "https://en.wikipedia.org/wiki/Polish_Braille"
+    },
+    {
+      "kind": "form",
+      "form": "uppercase",
+      "value": "R",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt"
+    },
+    {
+      "kind": "block",
+      "value": "Basic Latin",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/Blocks.txt"
+    },
+    {
+      "kind": "identity",
+      "value": "r",
+      "schema": "ans-character-crystal-v1",
+      "scope": "finite Unicode metadata and Polish forms, not universal cross-script equivalence",
+      "ucd_version": "17.0.0",
+      "ucd_license": "Unicode-3.0",
+      "lexical_license": "CC-BY-SA-4.0; Wikipedia contributors for Polish Braille reference"
+    },
+    {
+      "kind": "script",
+      "value": "Latin",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/Scripts.txt"
+    }
+  ]
+}

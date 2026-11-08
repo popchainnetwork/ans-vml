@@ -1,0 +1,60 @@
+{
+  "schema": "ans-character-crystal-v1",
+  "character": "z",
+  "root": "46124510a22206de5c77228cb6e1d986baf34e8105f7c36e1c9b48c0ba48419f",
+  "index": "ans:character:sha3-256:46124510a22206de5c77228cb6e1d986baf34e8105f7c36e1c9b48c0ba48419f",
+  "complete": false,
+  "minted": false,
+  "signed": false,
+  "gaps": [
+    "No cross-script equivalence guessed: UCD script metadata does not establish transliteration or phonetic equivalence.",
+    "No phonetic value inferred; letter pronunciation depends on language."
+  ],
+  "leaves": [
+    {
+      "kind": "character",
+      "value": "z",
+      "codepoint": "U+007A",
+      "name": "LATIN SMALL LETTER Z",
+      "category": "Ll",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt"
+    },
+    {
+      "kind": "form",
+      "form": "International_Morse",
+      "value": "--..",
+      "source": "https://www.itu.int/rec/R-REC-M.1677-1-200910-I/en"
+    },
+    {
+      "kind": "form",
+      "form": "Polish_Braille_uncontracted",
+      "value": "⠵",
+      "source": "https://en.wikipedia.org/wiki/Polish_Braille"
+    },
+    {
+      "kind": "form",
+      "form": "uppercase",
+      "value": "Z",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt"
+    },
+    {
+      "kind": "block",
+      "value": "Basic Latin",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/Blocks.txt"
+    },
+    {
+      "kind": "identity",
+      "value": "z",
+      "schema": "ans-character-crystal-v1",
+      "scope": "finite Unicode metadata and Polish forms, not universal cross-script equivalence",
+      "ucd_version": "17.0.0",
+      "ucd_license": "Unicode-3.0",
+      "lexical_license": "CC-BY-SA-4.0; Wikipedia contributors for Polish Braille reference"
+    },
+    {
+      "kind": "script",
+      "value": "Latin",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/Scripts.txt"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+ANS Core
+Copyright 2026 Paweł Piekut / Pplastechniek
+
+This product copy is licensed under Apache License 2.0. On 2026-11-08 the copyright holder explicitly authorised Apache-2.0 relicensing of his ans-xmss and bxb-chip code in the product core copy. The originals under ans-l0 and bxb-chip were NOT changed. Previously granted rights in other copies are not revoked.
+
+Core includes local kernel glue, copied ans-xmss and public KAT fixtures, ANS book, local CLI/grow, delegation protocol, chat and MCP. The bounded bxb-chip guide is Apache-2.0 in this copy. No hosted garden, real app connectors, partner marketplace/fee split, Pi5 DPP weld pack, crystal/credit billing or Stripe module is included.
+
+Third-party components retain their own licenses and notices: copied PopChain kernel remains MIT; Three.js 0.160.0 remains MIT; registry dependencies retain their declared licenses. Public KAT/reference attribution is retained; public reference metadata is not a money/credit product. See THIRD_PARTY and assets/licenses.json.

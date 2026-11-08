@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name="ans-xmss"
+version="0.1.0"
+edition="2021"
+license="Apache-2.0"
+[dependencies]
+sha2="0.10"
+hex="0.4"
+rand="0.8"
+thiserror="1"

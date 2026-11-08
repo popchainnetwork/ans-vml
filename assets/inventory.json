@@ -1,0 +1,16 @@
+{
+  "license": "Apache-2.0",
+  "core": [
+    "kernel glue",
+    "ans-xmss copy",
+    "KAT",
+    "ANS book",
+    "local CLI/grow",
+    "delegation protocol",
+    "chat",
+    "MCP",
+    "bounded bxb-chip guide"
+  ],
+  "third_party": "retains original licenses",
+  "pro_dependency": false
+}

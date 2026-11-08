@@ -1,0 +1,60 @@
+{
+  "schema": "ans-character-crystal-v1",
+  "character": "e",
+  "root": "ada3738c5db0b0a481c9fbc0002538543185bbbcb9a143bb99016f83eb78ae25",
+  "index": "ans:character:sha3-256:ada3738c5db0b0a481c9fbc0002538543185bbbcb9a143bb99016f83eb78ae25",
+  "complete": false,
+  "minted": false,
+  "signed": false,
+  "gaps": [
+    "No cross-script equivalence guessed: UCD script metadata does not establish transliteration or phonetic equivalence.",
+    "No phonetic value inferred; letter pronunciation depends on language."
+  ],
+  "leaves": [
+    {
+      "kind": "character",
+      "value": "e",
+      "codepoint": "U+0065",
+      "name": "LATIN SMALL LETTER E",
+      "category": "Ll",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt"
+    },
+    {
+      "kind": "form",
+      "form": "International_Morse",
+      "value": ".",
+      "source": "https://www.itu.int/rec/R-REC-M.1677-1-200910-I/en"
+    },
+    {
+      "kind": "form",
+      "form": "Polish_Braille_uncontracted",
+      "value": "⠑",
+      "source": "https://en.wikipedia.org/wiki/Polish_Braille"
+    },
+    {
+      "kind": "form",
+      "form": "uppercase",
+      "value": "E",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt"
+    },
+    {
+      "kind": "block",
+      "value": "Basic Latin",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/Blocks.txt"
+    },
+    {
+      "kind": "identity",
+      "value": "e",
+      "schema": "ans-character-crystal-v1",
+      "scope": "finite Unicode metadata and Polish forms, not universal cross-script equivalence",
+      "ucd_version": "17.0.0",
+      "ucd_license": "Unicode-3.0",
+      "lexical_license": "CC-BY-SA-4.0; Wikipedia contributors for Polish Braille reference"
+    },
+    {
+      "kind": "script",
+      "value": "Latin",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/Scripts.txt"
+    }
+  ]
+}

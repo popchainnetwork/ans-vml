@@ -1,0 +1,67 @@
+{
+  "schema": "ans-character-crystal-v1",
+  "character": "ń",
+  "root": "5ba8bc33de237191762c45b50d780b6a11769189ceadb8b9bc0999c1eff6def0",
+  "index": "ans:character:sha3-256:5ba8bc33de237191762c45b50d780b6a11769189ceadb8b9bc0999c1eff6def0",
+  "complete": false,
+  "minted": false,
+  "signed": false,
+  "gaps": [
+    "No cross-script equivalence guessed: UCD script metadata does not establish transliteration or phonetic equivalence.",
+    "No phonetic value inferred; letter pronunciation depends on language."
+  ],
+  "leaves": [
+    {
+      "kind": "character",
+      "value": "ń",
+      "codepoint": "U+0144",
+      "name": "LATIN SMALL LETTER N WITH ACUTE",
+      "category": "Ll",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt"
+    },
+    {
+      "kind": "form",
+      "form": "International_Morse_of_ASCII_fold",
+      "value": "-.",
+      "source": "https://www.itu.int/rec/R-REC-M.1677-1-200910-I/en",
+      "method": "lossy ń -> n; not exact Polish ń Morse"
+    },
+    {
+      "kind": "form",
+      "form": "Polish_Braille_uncontracted",
+      "value": "⠹",
+      "source": "https://en.wikipedia.org/wiki/Polish_Braille"
+    },
+    {
+      "kind": "form",
+      "form": "canonical_decomposition",
+      "value": "U+006E U+0301",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt"
+    },
+    {
+      "kind": "form",
+      "form": "uppercase",
+      "value": "Ń",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/UnicodeData.txt"
+    },
+    {
+      "kind": "block",
+      "value": "Latin Extended-A",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/Blocks.txt"
+    },
+    {
+      "kind": "identity",
+      "value": "ń",
+      "schema": "ans-character-crystal-v1",
+      "scope": "finite Unicode metadata and Polish forms, not universal cross-script equivalence",
+      "ucd_version": "17.0.0",
+      "ucd_license": "Unicode-3.0",
+      "lexical_license": "CC-BY-SA-4.0; Wikipedia contributors for Polish Braille reference"
+    },
+    {
+      "kind": "script",
+      "value": "Latin",
+      "source": "https://www.unicode.org/Public/17.0.0/ucd/Scripts.txt"
+    }
+  ]
+}

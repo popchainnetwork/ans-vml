@@ -37,7 +37,7 @@ fi
 
 `book seed` installs the finite sample data, not all languages and not a private seed. It does not mint. The pinned rdzeń root is `a8e5657614f0a4721d298b03d9f897bc64e3c4937059ea7a3393b90367a20b52`. A Merkle root binds leaf bytes, not linguistic truth. Wrapper identity must match a single root-bound identity leaf; an identity-level schema, when present, must match the wrapper schema. Legacy identities without a schema do not independently bind their type; the signed lifecycle snapshot and cache comparison preserve the accepted type.
 
-## Read-only dictionary browsing and public character proofs
+## Read-only dictionary browsing and public dependency proofs
 
 No request JSON, identity initialization or signer is needed to browse imported
 content. These commands never repair a cache, create configuration, reserve a key
@@ -65,13 +65,18 @@ PopChain payload commitments and independently checks the signed lifecycle path:
 "$ANS" dictionary verify r.proof.json --expect-key "$EXPECTED_PK"
 ```
 
-Export/verification currently supports **minted character paths only**. Word
-content can be browsed and draft/validated word states checked; a signed word mint
-fails closed because independent letter-dependency proof verification is not yet
-implemented. The entire custodian snapshot is refused if it contains unsupported
-or invalid lifecycle transitions. Imported content can still be viewed without
-`--as`. This deliberately does not promote legacy/peer mint claims to verified
-lifecycle state. Existing `book list`/MCP `list_words` response keys are retained,
+Export/verification supports minted **characters and words with a minimal public
+character-dependency closure under the same expected signer**. Each required
+lowercased character must have a verified Draft → Validated → Minted lifecycle
+completed before the word-mint intent, with its exact native mint sequence and root.
+The existing native `letters_of` rule determines character order, repeated letters
+and pinned `character_reference` roots; it is not replaced by an ad-hoc spelling
+rule. The native word event must match the exact ordered character/root/block list,
+word identity, root, filename, layer and operation. Both writer admission/replay and
+public reading use the same strict semantic engine and public kernel commitment
+checks. Invalid signed receipts or incomplete/mismatched dependencies fail closed.
+Imported content can still be viewed without `--as`. Legacy/peer native mint claims
+alone are not promoted to verified lifecycle state or word dependencies. Existing `book list`/MCP `list_words` response keys are retained,
 but `minted_block` now means an independently checked lifecycle native mint;
 cache-only/legacy claims remain null. An absent node ID stays null rather than
 being created by a read. CLI/MCP word lookup keeps form/translation folding and
@@ -85,8 +90,14 @@ operation/projection, ambiguous block height, or inconsistent tip produces a
 snapshot/retry error, never cache repair or a guessed state. This is a stable
 local snapshot, not a promise of latest state after the read returns.
 
-A character proof contains only its three selected intent/outcome pairs and native
-mint event, plus their public single-event blocks and selected entry. Whole signed
+A character proof contains its three selected intent/outcome pairs and native mint
+event. A word proof additionally includes that same seven-event path for each
+unique required character, in original sequence order. Repeated characters share
+a dependency path while retaining every ordered position in the native word event.
+Only relevant accepted lifecycle paths, their public single-event blocks and the
+target entry are included; rejected/retried attempts and unrelated entries are not
+exported. The pinned `rdzeń` fixture needs five characters and produces 42 selected
+events, not merely a character proof labeled as a word proof. Whole signed
 envelopes necessarily include selected crystal fields, timestamps and source
 metadata; review them before sharing. No unrelated journal records, seed files or
 signer counter files are exported. Secrets accidentally embedded in the selected
@@ -94,9 +105,9 @@ content/metadata cannot be redacted while preserving its original signature.
 
 Verification checks the external signer anchor, XMSSMT/WOTS+ signatures and index
 metadata, identity/schema/leaves/root, exact command/intent linkage, ordered
-Draft → Validated → Minted transitions, one exact native mint and block payload
-commitments/references. It rejects omitted native mints, duplicate effects,
-reordering, changed content/signatures and wrong anchors. A selective proof attests
+Draft → Validated → Minted transitions, exactly one native mint per selected entry,
+prior completed character dependencies, and block payload commitments/references. It rejects omitted native mints, duplicate effects,
+reordering, changed content/signatures and wrong anchors. A selective dependency proof attests
 a path **at its signed sequence**, not complete/latest history, absence of later
 conflicts, global name ownership, consensus or linguistic truth. Outer blocks are
 not authenticated by the event signer: commitment checks are not an outer-block
@@ -172,7 +183,7 @@ The first four receipts are accepted; `run` is rejected. This service intentiona
 
 Same ID + same command replays the original receipt while recording a new attempt; same ID + a different command is rejected. A new ID does not authorize repeating a mint. If an intent lacks a durable outcome on restart, it is closed as `interrupted`, not resumed. If a native mint reached the journal before a crash, the service refuses automatic reconciliation or another mint: manual test-state review is required. No claim of atomicity between journal and kernel, backup rollback resistance or external exactly-once effects is made.
 
-Accepted entry state is replayed from signed outcomes. The writer's historical replay checks the preceding intent hash, operation ID, command digest and canonical flag. Unlike the stricter public reader above, that writer replay is not a complete independently verified protocol reducer: it still trusts accepted receipt state rather than re-evaluating every transition and independently requiring a corresponding native mint for every replayed `minted` entry. The service emits linked native mint/outcome events; tests verify their XMSSMT/WOTS+ signatures and exact PopChain application payload binding. The outer PopChain block is not separately signed by this writer. Do not expose generic legacy signed-event admission as a lifecycle bypass.
+Accepted entry state is replayed from signed outcomes. Writer admission and public snapshots now share strict semantic replay: accepted receipt state is independently re-evaluated against command/intent linkage, immutable content, legal transitions and exact native mint effects. Word dependencies must already be verified minted in the same custodian history before the word-mint intent. Legacy signed receipts that lack these dependencies are refused, not silently migrated or granted authority. The service emits linked native mint/outcome events; tests verify their XMSSMT/WOTS+ signatures and exact PopChain application payload binding. The outer PopChain block is not separately signed by this writer. Do not expose generic legacy signed-event admission as a lifecycle bypass.
 
 Book files are a rebuildable cache; missing files are restored on subsequent admitted operations. Existing files must match the signed snapshot's identity, type and root, and reads must match the requested filename. Same-root wrapper identity/schema corruption fails closed: inspection receives a signed rejection and `book list` refuses the corrupt cache. Damaged files are not silently overwritten; preserve for diagnosis, then explicitly remove a damaged test cache file so the next operation can rebuild it from the signed snapshot.
 
@@ -190,3 +201,24 @@ run after signer files are removed and the existing writer lock is held. A CLI/M
 smoke browses seven public fixtures, verifies a seven-event character proof in a
 separate public-only directory, rejects a wrong anchor and creates no missing data
 directory during read-only startup. These checks are not a cryptographic audit.
+
+### Word dependency proof increment
+
+The existing pinned `rdzeń` word and five pinned Unicode character roots are admitted
+by the native protocol unchanged. A typed word mint before the characters is rejected;
+after their verified lifecycles complete, its native layer-2 mint records the ordered
+`r`, `d`, `z`, `e`, `ń` roots and native block sequences. Public `dictionary show rdzen`,
+`dictionary export rdzen --expect-key HEX` and standalone `dictionary verify` need
+no signer files. Word proofs use `ans-word-dependency-path-v1`; existing character
+proofs retain `ans-character-path-v1`. All selected paths must use the one externally
+expected signer; cross-custodian/peer dependency certification is not implemented.
+Export is a snapshot attestation, not proof that later competing history cannot exist.
+
+Verification for this increment: the locked release build succeeds and the workspace
+suite passes **32 tests**, preserving all previous 30. The pinned-word test covers
+pre-dependency rejection, five real character lifecycles, the native word mint,
+retry/duplicate refusal, 42-event closure export, omitted/altered dependency failures,
+wrong anchors, native payload tampering, and byte-identical public-only verification
+with signer files removed and the writer lock held. Another test records genuinely
+signed word-mint receipts before later character lifecycles and confirms both the
+reader and writer reject that history without a new admitted operation.

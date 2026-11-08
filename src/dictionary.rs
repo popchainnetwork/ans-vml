@@ -82,36 +82,7 @@ fn finish(owner: &str, dir: &Path, intent: &Value, receipt: &Receipt) -> Result<
     )
 }
 fn replay(events: &[Value]) -> Result<BTreeMap<String, Entry>> {
-    let mut entries = BTreeMap::new();
-    for e in events
-        .iter()
-        .filter(|e| action(e) == "dictionary.outcome" && data(e)["canonical"] == true)
-    {
-        let intent = events
-            .iter()
-            .find(|i| {
-                action(i) == "dictionary.intent"
-                    && i["hash"] == data(e)["intent_hash"]
-                    && i["seq"].as_u64() < e["seq"].as_u64()
-            })
-            .ok_or_else(|| anyhow!("Dictionary outcome has no preceding bound intent"))?;
-        let request: Request = serde_json::from_value(data(intent)["request"].clone())?;
-        let digest = hash(&serde_json::to_value(&request.command)?)?;
-        if data(e)["op_id"] != request.op_id.0
-            || data(e)["command_digest"] != digest
-            || data(intent)["command_digest"] != digest
-            || data(e)["canonical"] != data(intent)["canonical"]
-        {
-            bail!("Dictionary outcome does not match its intent and command");
-        }
-        let r: Receipt = serde_json::from_value(data(e)["receipt"].clone())?;
-        if r.status == Status::Accepted {
-            if let Some(entry) = r.entry {
-                entries.insert(entry.root.0.clone(), entry);
-            }
-        }
-    }
-    Ok(entries)
+    crate::dictionary_read::replay_verified(events)
 }
 fn rejected(reason: impl Into<String>) -> Receipt {
     Receipt {
@@ -196,7 +167,7 @@ fn evaluate(
                     if e.state!=State::Validated { bail!("Mint requires validated state"); }
                     if crate::rule::mint_proof(&c.root,journal,&[],&crate::exploit::event_valid).is_some() { bail!("A native mint already exists; automatic reconciliation is refused"); }
                     let letters = if c.kind==CrystalKind::Letter { vec![] } else {
-                        crate::rule::letters_of(&c,&|ch| journal.iter().find(|v|action(v)=="word.mint" && data(v)["word"]==ch.to_string() && data(v)["layer"]==1).map(|v|(data(v)["root"].as_str().unwrap_or("").to_owned(),v["seq"].clone())))?
+                        crate::rule::letters_of(&c,&|ch| entries.values().find(|e|e.word.language=="und" && e.word.spelling==ch.to_string() && e.state==State::Minted && Crystal::parse(&e.crystal.to_string()).is_ok_and(|c|c.kind==CrystalKind::Letter)).and_then(|e|journal.iter().find(|v|action(v)=="word.mint" && data(v)["root"]==e.root.0 && data(v)["layer"]==1)).map(|v|(data(v)["root"].as_str().unwrap_or("").to_owned(),v["seq"].clone())))?
                     };
                     append(owner,dir,"word.mint",json!({"word":c.id,"root":c.root,"file":c.file_name(),"layer":if c.kind==CrystalKind::Letter{1}else{2},"letters":letters,"op_id":req.op_id,"service":"dictionary","chain":"local test journal; not mainnet"}))?;
                     e.state=State::Minted;
@@ -273,7 +244,7 @@ pub fn apply(root: &Path, owner: &str, req: Request) -> Result<Value> {
             && data(e)["op_id"] == req.op_id.0
     });
     let canonical = prior.is_none();
-    let entries = replay(&journal)?;
+    let entries = crate::dictionary_read::writer_entries(root, owner, &journal)?;
     let intent = append(
         owner,
         &dir,

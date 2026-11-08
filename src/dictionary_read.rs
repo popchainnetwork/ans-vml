@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Public, non-mutating dictionary snapshots and selective character attestations.
+//! Public, non-mutating dictionary snapshots and selective dependency attestations.
 use crate::dictionary::{Command, Entry, Receipt, Request, State, Status};
 use ans_dict::{Crystal, CrystalKind};
 use anyhow::{anyhow, bail, Context, Result};
@@ -67,8 +67,7 @@ fn read(path: &Path) -> Result<Vec<u8>> {
     }
     std::fs::read(path).with_context(|| format!("Read public snapshot {}", path.display()))
 }
-fn event_check(a: &Attestation, expected: &str) -> Result<()> {
-    let e = &a.event;
+fn signature_check(e: &Value, expected: &str) -> Result<()> {
     if text(&e["xmss"], "pk")? != expected || !crate::exploit::event_valid(e) {
         bail!("Signature or expected signer mismatch");
     }
@@ -77,6 +76,11 @@ fn event_check(a: &Attestation, expected: &str) -> Result<()> {
     if e["xmss"]["idx"] != signature.idx {
         bail!("Signature index metadata mismatch");
     }
+    Ok(())
+}
+fn event_check(a: &Attestation, expected: &str) -> Result<()> {
+    let e = &a.event;
+    signature_check(e, expected)?;
     verify_block_commitments(&a.block)?;
     if a.block.header.height != seq(e)? || a.block.app_events.len() != 1 {
         bail!("Block/event position mismatch");
@@ -134,10 +138,42 @@ fn validate(c: &Crystal) -> Result<()> {
     }
     Ok(())
 }
-// Strict replay, deliberately separate from the writer's historical receipt reducer.
-// The selected-proof mode proves a path at its signed sequence, NOT history completeness.
+// One semantic replay engine serves local writer admission and public proofs.
+// Selected proofs attest paths at signed sequences, not complete history.
 fn reduce(
     events: &[Attestation],
+    expected: &str,
+    selected: bool,
+) -> Result<BTreeMap<String, Entry>> {
+    let mut prior: Option<&Attestation> = None;
+    for a in events {
+        event_check(a, expected)?;
+        if prior.is_some_and(|p| {
+            seq(&a.event).ok() == seq(&p.event).ok().and_then(|s| s.checked_add(1))
+                && a.block.header.prev_block_hash_hex != p.block.block_hash_hex
+        }) {
+            bail!("Selected consecutive block references do not link");
+        }
+        if selected && !a.block.proofs.is_empty() {
+            bail!("Proof contains unrelated kernel proofs");
+        }
+        prior = Some(a);
+    }
+    replay_events(
+        &events.iter().map(|a| a.event.clone()).collect::<Vec<_>>(),
+        expected,
+        selected,
+    )
+}
+pub fn replay_verified(events: &[Value]) -> Result<BTreeMap<String, Entry>> {
+    let key = events
+        .first()
+        .and_then(|e| e["xmss"]["pk"].as_str())
+        .ok_or_else(|| anyhow!("Empty signed journal"))?;
+    replay_events(events, key, false)
+}
+fn replay_events(
+    events: &[Value],
     expected: &str,
     selected: bool,
 ) -> Result<BTreeMap<String, Entry>> {
@@ -152,21 +188,11 @@ fn reduce(
     let mut prior_seq = 0;
     let mut prior_idx = None;
     let mut prior_event: Option<&Value> = None;
-    let mut prior_block: Option<&str> = None;
     let mut owner: Option<&str> = None;
-    for a in events {
-        event_check(a, expected)?;
-        let e = &a.event;
+    let mut minted: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+    for e in events {
+        signature_check(e, expected)?;
         let n = seq(e)?;
-        if n == prior_seq + 1
-            && prior_block.is_some_and(|p| a.block.header.prev_block_hash_hex != p)
-        {
-            bail!("Selected consecutive block references do not link");
-        }
-        if selected && !a.block.proofs.is_empty() {
-            bail!("Character proof contains unrelated kernel proofs");
-        }
-        prior_block = Some(&a.block.block_hash_hex);
         let idx = e["xmss"]["idx"]
             .as_u64()
             .ok_or_else(|| anyhow!("Missing signature index"))?;
@@ -228,7 +254,7 @@ fn reduce(
                 let intent_hash = text(d(e), "intent_hash")?;
                 let (request, canonical, hash, intent) = intents
                     .get(intent_hash)
-                    .ok_or_else(|| anyhow!("Outcome without preceding intent"))?;
+                    .ok_or_else(|| anyhow!("Dictionary outcome has no preceding bound intent"))?;
                 if !completed.insert(intent_hash.to_string())
                     || d(e)["op_id"] != request.op_id.0
                     || d(e)["command_digest"] != *hash
@@ -308,12 +334,8 @@ fn reduce(
                                     {
                                         bail!("Invalid mint transition");
                                     }
-                                    if c.kind != CrystalKind::Letter {
-                                        bail!("Word mint dependency proof verification is not implemented; refusing verified state");
-                                    }
                                     let native = events
                                         .iter()
-                                        .map(|a| &a.event)
                                         .find(|m| {
                                             action(m) == "word.mint"
                                                 && d(m)["op_id"] == request.op_id.0
@@ -325,14 +347,38 @@ fn reduce(
                                         .ok_or_else(|| anyhow!("Missing native mint event"))?;
                                     follows(native, intent)?;
                                     follows(e, native)?;
+                                    let letters = crate::rule::letters_of(&c, &|ch| {
+                                        entries
+                                            .values()
+                                            .find(|letter| {
+                                                letter.word.language == "und"
+                                                    && letter.word.spelling == ch.to_string()
+                                                    && letter.state == State::Minted
+                                                    && crystal_entry(letter).is_ok_and(|c| {
+                                                        c.kind == CrystalKind::Letter
+                                                    })
+                                            })
+                                            .and_then(|letter| {
+                                                minted
+                                                    .get(&letter.root.0)
+                                                    .filter(|(_, outcome)| {
+                                                        *outcome < seq(intent).unwrap_or(0)
+                                                    })
+                                                    .map(|(block, _)| {
+                                                        (letter.root.0.clone(), json!(block))
+                                                    })
+                                            })
+                                    })?;
                                     if d(native)["word"] != c.id
                                         || d(native)["file"] != c.file_name()
-                                        || d(native)["layer"] != 1
+                                        || d(native)["layer"]
+                                            != if c.kind == CrystalKind::Letter { 1 } else { 2 }
                                         || d(native)["service"] != "dictionary"
-                                        || d(native)["letters"] != json!([])
+                                        || d(native)["letters"] != json!(letters)
                                     {
                                         bail!("Native mint identity/type/dependencies mismatch");
                                     }
+                                    minted.insert(c.root.clone(), (seq(native)?, n));
                                 }
                                 Command::Inspect { .. } => {
                                     follows(e, intent)?;
@@ -422,6 +468,21 @@ fn public_snapshot(
     }
     reduce(&result, &key, false)?;
     Ok((result, key))
+}
+pub fn writer_entries(
+    root: &Path,
+    owner: &str,
+    events: &[Value],
+) -> Result<BTreeMap<String, Entry>> {
+    let key = events
+        .first()
+        .and_then(|e| e["xmss"]["pk"].as_str())
+        .ok_or_else(|| anyhow!("Empty writer journal"))?;
+    let (public, verified_key) = public_snapshot(root, owner, Some(key))?;
+    if public.iter().map(|a| &a.event).ne(events.iter()) {
+        bail!("Writer/public snapshot changed before admission");
+    }
+    reduce(&public, &verified_key, false)
 }
 fn item(
     c: &Crystal,
@@ -549,16 +610,45 @@ pub fn show(root: &Path, owner: &str, query: &str, anchor: Option<&str>) -> Resu
     }
     Ok(found.into_iter().next().unwrap())
 }
+fn dependency_roots(entry: &Entry, entries: &BTreeMap<String, Entry>) -> Result<BTreeSet<String>> {
+    let c = crystal_entry(entry)?;
+    let mut roots = BTreeSet::from([entry.root.0.clone()]);
+    if c.kind == CrystalKind::Word {
+        for ch in c.id.to_lowercase().chars() {
+            let letter = entries
+                .values()
+                .find(|e| {
+                    e.word.spelling == ch.to_string()
+                        && e.word.language == "und"
+                        && e.state == State::Minted
+                        && crystal_entry(e).is_ok_and(|c| c.kind == CrystalKind::Letter)
+                })
+                .ok_or_else(|| anyhow!("Missing verified minted dependency '{ch}'"))?;
+            roots.insert(letter.root.0.clone());
+        }
+    }
+    Ok(roots)
+}
 pub fn export(root: &Path, owner: &str, query: &str, anchor: &str) -> Result<Proof> {
     let (events, key) = public_snapshot(root, owner, Some(anchor))?;
     let entries = reduce(&events, &key, false)?;
-    let entry = entries
-        .into_values()
-        .find(|e| e.root.0 == query || e.word.spelling == query)
-        .ok_or_else(|| anyhow!("No signed lifecycle entry"))?;
-    if entry.state != State::Minted || crystal_entry(&entry)?.kind != CrystalKind::Letter {
-        bail!("Export currently supports minted character paths only; word dependency proofs are not implemented");
+    let mut candidates = entries
+        .values()
+        .filter(|e| e.root.0 == query || crystal_entry(e).is_ok_and(|c| matches(&c, query)))
+        .cloned()
+        .collect::<Vec<_>>();
+    if candidates.len() != 1 {
+        bail!(
+            "Expected one signed lifecycle entry, found {}; use its content root",
+            candidates.len()
+        );
     }
+    let entry = candidates.pop().unwrap();
+    if entry.state != State::Minted {
+        bail!("Export requires a verified minted entry");
+    }
+    let word = crystal_entry(&entry)?.kind == CrystalKind::Word;
+    let roots = dependency_roots(&entry, &entries)?;
     let mut hashes = BTreeSet::new();
     let mut op_ids = BTreeSet::new();
     for a in &events {
@@ -566,7 +656,9 @@ pub fn export(root: &Path, owner: &str, query: &str, anchor: &str) -> Result<Pro
         if action(e) == "dictionary.outcome"
             && d(e)["canonical"] == true
             && d(e)["receipt"]["status"] == "accepted"
-            && d(e)["receipt"]["entry"]["root"] == entry.root.0
+            && d(e)["receipt"]["entry"]["root"]
+                .as_str()
+                .is_some_and(|r| roots.contains(r))
         {
             let ih = text(d(e), "intent_hash")?;
             let intent = events
@@ -589,14 +681,21 @@ pub fn export(root: &Path, owner: &str, query: &str, anchor: &str) -> Result<Pro
         .filter(|a| {
             hashes.contains(a.event["hash"].as_str().unwrap_or(""))
                 || (action(&a.event) == "word.mint"
-                    && d(&a.event)["root"] == entry.root.0
+                    && d(&a.event)["root"]
+                        .as_str()
+                        .is_some_and(|r| roots.contains(r))
                     && d(&a.event)["op_id"]
                         .as_str()
                         .is_some_and(|id| op_ids.contains(id)))
         })
         .collect();
     let proof = Proof {
-        format: "ans-character-path-v1".into(),
+        format: if word {
+            "ans-word-dependency-path-v1"
+        } else {
+            "ans-character-path-v1"
+        }
+        .into(),
         entry,
         attestations: selected,
     };
@@ -604,26 +703,44 @@ pub fn export(root: &Path, owner: &str, query: &str, anchor: &str) -> Result<Pro
     Ok(proof)
 }
 pub fn verify(proof: &Proof, anchor: &str) -> Result<Value> {
-    if proof.format != "ans-character-path-v1"
-        || proof.attestations.len() != 7
+    let c = crystal_entry(&proof.entry)?;
+    let word = c.kind == CrystalKind::Word;
+    if proof.format
+        != if word {
+            "ans-word-dependency-path-v1"
+        } else {
+            "ans-character-path-v1"
+        }
         || proof.entry.state != State::Minted
-        || crystal_entry(&proof.entry)?.kind != CrystalKind::Letter
+        || proof.attestations.is_empty()
     {
-        bail!("Unsupported or incomplete character proof");
+        bail!("Unsupported or incomplete dictionary proof");
     }
     let entries = reduce(&proof.attestations, anchor, true)?;
-    if entries.len() != 1
+    let roots = dependency_roots(&proof.entry, &entries)?;
+    if proof.attestations.len() != roots.len() * 7
+        || entries.keys().cloned().collect::<BTreeSet<_>>() != roots
+        || entries.values().any(|e| e.state != State::Minted)
         || serde_json::to_value(
             entries
                 .get(&proof.entry.root.0)
                 .ok_or_else(|| anyhow!("Missing proven root"))?,
         )? != serde_json::to_value(&proof.entry)?
     {
-        bail!("Proof entry does not match the attested transition path");
+        bail!("Proof entry/dependency closure does not match the attested transition path");
     }
-    Ok(
-        json!({"character_path_verified":true,"root":proof.entry.root,"identity":proof.entry.word,"attested_state":"minted","at_sequence":seq(&proof.attestations.last().unwrap().event)?,"expected_signer":anchor,"scope":"selected signed transition path and block payload commitments; not complete/current history, consensus, global naming, factual truth, or outer block signature"}),
-    )
+    let native = proof
+        .attestations
+        .iter()
+        .find(|a| action(&a.event) == "word.mint" && d(&a.event)["root"] == proof.entry.root.0)
+        .ok_or_else(|| anyhow!("Missing proven native mint"))?;
+    let mut result = json!({"path_verified":true,"root":proof.entry.root,"identity":proof.entry.word,"attested_state":"minted","at_sequence":seq(&proof.attestations.last().unwrap().event)?,"expected_signer":anchor,"dependency_count":roots.len()-1,"dependencies":d(&native.event)["letters"],"scope":"selected signed transition and dependency paths with block payload commitments; not complete/current history, consensus, global naming, factual truth, or outer block signature"});
+    result[if word {
+        "word_dependency_path_verified"
+    } else {
+        "character_path_verified"
+    }] = json!(true);
+    Ok(result)
 }
 pub fn summary(record: &Item, lang: Option<&str>, limit: usize) -> Result<Value> {
     let c = Crystal::parse(&serde_json::to_string(&record.content)?)?;
@@ -865,6 +982,273 @@ mod tests {
         assert_eq!(files(&standalone.0), before);
     }
     #[test]
+    fn pinned_word_dependency_closure_round_trips_without_a_signer() {
+        let h = Home::new();
+        h.initialize();
+        let word: Value =
+            serde_json::from_str(include_str!("../assets/crystals/rdzen.crystal.json")).unwrap();
+        let wr = ContentRoot(word["root"].as_str().unwrap().into());
+        h.apply(
+            "word-draft",
+            Command::Draft {
+                word: WordId {
+                    language: "pl".into(),
+                    spelling: "rdzeń".into(),
+                },
+                crystal: word,
+            },
+        );
+        h.apply("word-validate", Command::Validate { root: wr.clone() });
+        let early = crate::dictionary::apply(
+            &h.0,
+            "alice",
+            Request {
+                op_id: OperationId("word-missing-letters".into()),
+                command: Command::Mint { root: wr.clone() },
+            },
+        )
+        .unwrap();
+        assert_eq!(early["receipt"]["status"], "rejected");
+        let fixtures = [
+            include_str!("../assets/crystals/u0072.crystal.json"),
+            include_str!("../assets/crystals/u0064.crystal.json"),
+            include_str!("../assets/crystals/u007a.crystal.json"),
+            include_str!("../assets/crystals/u0065.crystal.json"),
+            include_str!("../assets/crystals/u0144.crystal.json"),
+        ];
+        for (i, fixture) in fixtures.iter().enumerate() {
+            let c: Value = serde_json::from_str(fixture).unwrap();
+            let root = ContentRoot(c["root"].as_str().unwrap().into());
+            let spelling = c["character"].as_str().unwrap().to_string();
+            h.apply(
+                &format!("char-{i}-draft"),
+                Command::Draft {
+                    word: WordId {
+                        language: "und".into(),
+                        spelling,
+                    },
+                    crystal: c,
+                },
+            );
+            h.apply(
+                &format!("char-{i}-validate"),
+                Command::Validate { root: root.clone() },
+            );
+            h.apply(&format!("char-{i}-mint"), Command::Mint { root });
+        }
+        h.apply("word-mint", Command::Mint { root: wr.clone() });
+        // A retry and rejected duplicate effects must not add another proof path.
+        h.apply("word-mint", Command::Mint { root: wr.clone() });
+        let rejected = crate::dictionary::apply(
+            &h.0,
+            "alice",
+            Request {
+                op_id: OperationId("duplicate-word-mint".into()),
+                command: Command::Mint { root: wr.clone() },
+            },
+        )
+        .unwrap();
+        assert_eq!(rejected["receipt"]["status"], "rejected");
+        let key = h.key();
+        for file in ["xmss-demo.seed", "xmss-demo.state"] {
+            std::fs::remove_file(h.dir().join(file)).unwrap();
+        }
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(h.dir().join("writer.lock"))
+            .unwrap();
+        fs4::FileExt::try_lock_exclusive(&lock).unwrap();
+        let before = files(&h.0);
+        let shown = show(&h.0, "alice", "rdzen", Some(&key)).unwrap();
+        assert_eq!(shown.lifecycle, Some(State::Minted));
+        assert_eq!(
+            shown.root,
+            "a8e5657614f0a4721d298b03d9f897bc64e3c4937059ea7a3393b90367a20b52"
+        );
+        let proof = export(&h.0, "alice", &wr.0, &key).unwrap();
+        assert_eq!(proof.format, "ans-word-dependency-path-v1");
+        assert_eq!(proof.attestations.len(), 42);
+        let result = verify(&proof, &key).unwrap();
+        assert_eq!(result["word_dependency_path_verified"], true);
+        assert_eq!(result["dependency_count"], 5);
+        assert_eq!(result["dependencies"].as_array().unwrap().len(), 5);
+        let encoded = serde_json::to_string(&proof).unwrap();
+        assert!(
+            !encoded.contains("word-missing-letters")
+                && !encoded.contains("duplicate-word-mint")
+                && !encoded.contains("custodian.install")
+        );
+        let target = proof
+            .attestations
+            .iter()
+            .position(|a| action(&a.event) == "word.mint" && d(&a.event)["root"] == wr.0)
+            .unwrap();
+        let mut bad = proof.clone();
+        bad.attestations[target].event["body"]["data"]["letters"][0]["root"] =
+            json!("00".repeat(32));
+        assert!(verify(&bad, &key).is_err());
+        let mut bad = proof.clone();
+        bad.attestations[target].block.app_events[0].payload_b64 = "dGFtcGVy".into();
+        assert!(verify(&bad, &key).is_err());
+        let omitted = "5ba8bc33de237191762c45b50d780b6a11769189ceadb8b9bc0999c1eff6def0";
+        let mut bad = proof.clone();
+        bad.attestations.retain(|a| {
+            let e = &a.event;
+            d(e)["root"] != omitted
+                && d(e)["receipt"]["entry"]["root"] != omitted
+                && d(e)["request"]["command"]["root"] != omitted
+                && d(e)["request"]["command"]["crystal"]["root"] != omitted
+        });
+        assert_eq!(bad.attestations.len(), 35);
+        assert!(verify(&bad, &key)
+            .unwrap_err()
+            .to_string()
+            .contains("not minted"));
+        let mut bad = proof.clone();
+        let last = bad.attestations.pop().unwrap();
+        bad.attestations.insert(0, last);
+        assert!(verify(&bad, &key).is_err());
+        let mut bad = proof.clone();
+        bad.attestations.push(bad.attestations[target].clone());
+        assert!(verify(&bad, &key).is_err());
+        assert!(verify(&proof, &"00".repeat(64)).is_err());
+        assert_eq!(files(&h.0), before);
+        let public = Home::new();
+        let path = public.0.join("word.proof.json");
+        std::fs::write(&path, encoded).unwrap();
+        let before = files(&public.0);
+        assert_eq!(
+            cli(
+                &public.0,
+                "",
+                &[
+                    "verify".into(),
+                    path.to_string_lossy().into(),
+                    "--expect-key".into(),
+                    key
+                ]
+            )
+            .unwrap()["word_dependency_path_verified"],
+            true
+        );
+        assert_eq!(files(&public.0), before);
+    }
+    #[test]
+    fn signed_word_mint_cannot_reach_forward_to_later_character_lifecycles() {
+        fn append(h: &Home, id: &str, command: Command, entry: &Entry, native: Option<Value>) {
+            let request = Request {
+                op_id: OperationId(id.into()),
+                command,
+            };
+            let hash = digest(&serde_json::to_value(&request.command).unwrap()).unwrap();
+            let intent = crate::exploit::record_local(
+                "alice",
+                &h.dir(),
+                "dictionary.intent",
+                json!({"request":request,"command_digest":hash,"canonical":true}),
+            )
+            .unwrap();
+            if let Some(native) = native {
+                crate::exploit::record_local("alice", &h.dir(), "word.mint", native).unwrap();
+            }
+            crate::exploit::record_local("alice",&h.dir(),"dictionary.outcome",json!({"intent_hash":intent["hash"],"op_id":id,"command_digest":hash,"canonical":true,"receipt":{"status":"accepted","reason":null,"entry":entry}})).unwrap();
+        }
+        let h = Home::new();
+        h.initialize();
+        let c: Value =
+            serde_json::from_str(include_str!("../assets/crystals/rdzen.crystal.json")).unwrap();
+        let root = ContentRoot(c["root"].as_str().unwrap().into());
+        h.apply(
+            "word-draft",
+            Command::Draft {
+                word: WordId {
+                    language: "pl".into(),
+                    spelling: "rdzeń".into(),
+                },
+                crystal: c.clone(),
+            },
+        );
+        h.apply("word-validate", Command::Validate { root: root.clone() });
+        let word = Entry {
+            word: WordId {
+                language: "pl".into(),
+                spelling: "rdzeń".into(),
+            },
+            root: root.clone(),
+            state: State::Minted,
+            crystal: c,
+        };
+        append(
+            &h,
+            "early-word-mint",
+            Command::Mint { root: root.clone() },
+            &word,
+            Some(
+                json!({"op_id":"early-word-mint","word":"rdzeń","root":root,"file":"rdzen.crystal.json","layer":2,"service":"dictionary","letters":[]}),
+            ),
+        );
+        // These genuinely signed valid-looking character transitions occur TOO LATE.
+        let c = Home::fixture();
+        let lr = ContentRoot(c["root"].as_str().unwrap().into());
+        let mut letter = Entry {
+            word: WordId {
+                language: "und".into(),
+                spelling: "r".into(),
+            },
+            root: lr.clone(),
+            state: State::Draft,
+            crystal: c.clone(),
+        };
+        append(
+            &h,
+            "late-char-draft",
+            Command::Draft {
+                word: letter.word.clone(),
+                crystal: c,
+            },
+            &letter,
+            None,
+        );
+        letter.state = State::Validated;
+        append(
+            &h,
+            "late-char-validate",
+            Command::Validate { root: lr.clone() },
+            &letter,
+            None,
+        );
+        letter.state = State::Minted;
+        append(
+            &h,
+            "late-char-mint",
+            Command::Mint { root: lr.clone() },
+            &letter,
+            Some(
+                json!({"op_id":"late-char-mint","word":"r","root":lr,"file":"u0072.crystal.json","layer":1,"service":"dictionary","letters":[]}),
+            ),
+        );
+        let journal = std::fs::read_to_string(h.dir().join("chain.ndjson")).unwrap();
+        assert!(journal
+            .lines()
+            .all(|l| crate::exploit::event_valid(&serde_json::from_str::<Value>(l).unwrap())));
+        assert!(browse(&h.0, "alice", Some(&h.key()))
+            .unwrap_err()
+            .to_string()
+            .contains("not minted"));
+        let before = std::fs::read(h.dir().join("chain.ndjson")).unwrap();
+        assert!(crate::dictionary::apply(
+            &h.0,
+            "alice",
+            Request {
+                op_id: OperationId("refuse-invalid-word-history".into()),
+                command: Command::Inspect { root }
+            }
+        )
+        .is_err());
+        assert_eq!(std::fs::read(h.dir().join("chain.ndjson")).unwrap(), before);
+    }
+    #[test]
     fn signed_receipt_cannot_skip_draft_and_validation_and_duplicate_mints_fail_closed() {
         let h = Home::new();
         h.initialize();
@@ -896,6 +1280,19 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("no draft"));
+        let before = std::fs::read(h.dir().join("chain.ndjson")).unwrap();
+        assert!(crate::dictionary::apply(
+            &h.0,
+            "alice",
+            Request {
+                op_id: OperationId("writer-must-refuse-invalid-history".into()),
+                command: Command::Inspect {
+                    root: ContentRoot("00".repeat(32))
+                }
+            }
+        )
+        .is_err());
+        assert_eq!(std::fs::read(h.dir().join("chain.ndjson")).unwrap(), before);
         let valid = Home::new();
         let key = valid.mint();
         let chain = std::fs::read_to_string(valid.dir().join("chain.ndjson")).unwrap();

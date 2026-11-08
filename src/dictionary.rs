@@ -316,6 +316,9 @@ pub fn proposal(value: Value) -> Result<Value> {
     )
 }
 pub fn cli(root: &Path, owner: &str, args: &[String]) -> Result<Value> {
+    if args.first().is_some_and(|a| a != "apply") {
+        return crate::dictionary_read::cli(root, owner, args);
+    }
     if args.len() != 2 || args[0] != "apply" {
         bail!("Usage: ans --as OWNER dictionary apply REQUEST.json");
     }

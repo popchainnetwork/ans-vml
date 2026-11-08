@@ -37,6 +37,72 @@ fi
 
 `book seed` installs the finite sample data, not all languages and not a private seed. It does not mint. The pinned rdzeń root is `a8e5657614f0a4721d298b03d9f897bc64e3c4937059ea7a3393b90367a20b52`. A Merkle root binds leaf bytes, not linguistic truth. Wrapper identity must match a single root-bound identity leaf; an identity-level schema, when present, must match the wrapper schema. Legacy identities without a schema do not independently bind their type; the signed lifecycle snapshot and cache comparison preserve the accepted type.
 
+## Read-only dictionary browsing and public character proofs
+
+No request JSON, identity initialization or signer is needed to browse imported
+content. These commands never repair a cache, create configuration, reserve a key
+index, or append to the journal:
+
+```sh
+"$ANS" dictionary list
+"$ANS" dictionary show rdzen
+"$ANS" word rdzen --lang en
+"$ANS" book list
+```
+
+`cache_only_imported` means Merkle-checked content, **not a lifecycle or mint**.
+With an explicit existing custodian, the reader verifies its public journal and
+PopChain payload commitments and independently checks the signed lifecycle path:
+
+```sh
+"$ANS" --as alice dictionary list
+"$ANS" --as alice dictionary show r
+# EXPECTED_PK must come independently from the custodian you intend to trust.
+# Do not trust a key merely because it appears in a downloaded proof or list.
+"$ANS" --as alice dictionary show r --expect-key "$EXPECTED_PK"
+"$ANS" --as alice dictionary export r --expect-key "$EXPECTED_PK" > r.proof.json
+# Can run on a separate machine with only ans, this public file and the anchor:
+"$ANS" dictionary verify r.proof.json --expect-key "$EXPECTED_PK"
+```
+
+Export/verification currently supports **minted character paths only**. Word
+content can be browsed and draft/validated word states checked; a signed word mint
+fails closed because independent letter-dependency proof verification is not yet
+implemented. The entire custodian snapshot is refused if it contains unsupported
+or invalid lifecycle transitions. Imported content can still be viewed without
+`--as`. This deliberately does not promote legacy/peer mint claims to verified
+lifecycle state. Existing `book list`/MCP `list_words` response keys are retained,
+but `minted_block` now means an independently checked lifecycle native mint;
+cache-only/legacy claims remain null. An absent node ID stays null rather than
+being created by a read. CLI/MCP word lookup keeps form/translation folding and
+exposes provenance. Legacy JSON fallback is explicitly unsigned/unverified.
+
+The reader does not open a signer or PopChain database. It reads public files
+only: the journal, kernel state/height index/block files, and cache crystals.
+It works without signer seed/counter files and while a writer lock is held, if
+journal/projection bytes are stable for the read. An in-flight append, incomplete
+operation/projection, ambiguous block height, or inconsistent tip produces a
+snapshot/retry error, never cache repair or a guessed state. This is a stable
+local snapshot, not a promise of latest state after the read returns.
+
+A character proof contains only its three selected intent/outcome pairs and native
+mint event, plus their public single-event blocks and selected entry. Whole signed
+envelopes necessarily include selected crystal fields, timestamps and source
+metadata; review them before sharing. No unrelated journal records, seed files or
+signer counter files are exported. Secrets accidentally embedded in the selected
+content/metadata cannot be redacted while preserving its original signature.
+
+Verification checks the external signer anchor, XMSSMT/WOTS+ signatures and index
+metadata, identity/schema/leaves/root, exact command/intent linkage, ordered
+Draft → Validated → Minted transitions, one exact native mint and block payload
+commitments/references. It rejects omitted native mints, duplicate effects,
+reordering, changed content/signatures and wrong anchors. A selective proof attests
+a path **at its signed sequence**, not complete/latest history, absence of later
+conflicts, global name ownership, consensus or linguistic truth. Outer blocks are
+not authenticated by the event signer: commitment checks are not an outer-block
+signature or independent proof of public-chain placement. No execution permission
+is enabled.
+
 ## MCP
 
 Configure an MCP-capable local client to run the absolute path to `ans mcp` with an `ANS_HOME` environment pointing at its isolated demo directory. Transport is stdio. Tools include `word`, `list_words`, `mint_request`, `run_plan`, `run`; a mint request is not a signature or automatic approval. The integration test `tests/mcp_words.rs` exercises initialization, tool listing, lookup and unminted-run refusal. No model is bundled, loaded or remotely connected by this project.
@@ -106,10 +172,21 @@ The first four receipts are accepted; `run` is rejected. This service intentiona
 
 Same ID + same command replays the original receipt while recording a new attempt; same ID + a different command is rejected. A new ID does not authorize repeating a mint. If an intent lacks a durable outcome on restart, it is closed as `interrupted`, not resumed. If a native mint reached the journal before a crash, the service refuses automatic reconciliation or another mint: manual test-state review is required. No claim of atomicity between journal and kernel, backup rollback resistance or external exactly-once effects is made.
 
-Accepted entry state is replayed from signed outcomes. Replay checks the preceding intent hash, operation ID, command digest and canonical flag. This is not a complete independently verified protocol reducer: it still trusts accepted receipt state rather than re-evaluating every transition and independently requiring a corresponding native mint for every replayed `minted` entry. The service emits linked native mint/outcome events; tests verify their XMSSMT/WOTS+ signatures and exact PopChain application payload binding. The outer PopChain block is not separately signed by this writer. Do not expose generic legacy signed-event admission as a lifecycle bypass.
+Accepted entry state is replayed from signed outcomes. The writer's historical replay checks the preceding intent hash, operation ID, command digest and canonical flag. Unlike the stricter public reader above, that writer replay is not a complete independently verified protocol reducer: it still trusts accepted receipt state rather than re-evaluating every transition and independently requiring a corresponding native mint for every replayed `minted` entry. The service emits linked native mint/outcome events; tests verify their XMSSMT/WOTS+ signatures and exact PopChain application payload binding. The outer PopChain block is not separately signed by this writer. Do not expose generic legacy signed-event admission as a lifecycle bypass.
 
 Book files are a rebuildable cache; missing files are restored on subsequent admitted operations. Existing files must match the signed snapshot's identity, type and root, and reads must match the requested filename. Same-root wrapper identity/schema corruption fails closed: inspection receives a signed rejection and `book list` refuses the corrupt cache. Damaged files are not silently overwritten; preserve for diagnosis, then explicitly remove a damaged test cache file so the next operation can rebuild it from the signed snapshot.
 
 MCP `dictionary_propose` parses the **same Request type** and returns an unsigned, unexecuted envelope for explicit custodian CLI review. It never invokes the signer or silently approves a model request. Existing lookup/planning tools are retained.
 
 All new documentation is English. Existing inherited localized messages are not broadly rewritten. Stripe remains deferred until product testing; no Stripe integration is included.
+
+### Read-only increment verification
+
+The locked release build and workspace suite pass 30 tests (0 failures). Reader
+tests include anchored public-only proof verification, signed but invalid state
+transitions/native effects, duplicates, content/signature/block tampering, missing
+cache without repair and incomplete projections. Byte-for-byte snapshot assertions
+run after signer files are removed and the existing writer lock is held. A CLI/MCP
+smoke browses seven public fixtures, verifies a seven-event character proof in a
+separate public-only directory, rejects a wrong anchor and creates no missing data
+directory during read-only startup. These checks are not a cryptographic audit.

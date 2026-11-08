@@ -12,6 +12,7 @@ mod word;
 mod rule;
 mod words;
 mod dictionary;
+mod dictionary_read;
 use anyhow::{anyhow, bail, Result};
 use rand::RngCore;
 use serde_json::{json, Value};
@@ -541,12 +542,19 @@ fn run() -> Result<()> {
     }
     let cmd = args.first().map(String::as_str).unwrap_or("help");
     if cmd == "help" || cmd == "--help" {
-        println!("ans init|install <word> | grow --plan|--apply [--hosts hosts.toml] | up | status | chat [to text] | skill list|add|grant|revoke|run | node [resolve /word/channel] | book resolve <word> | attest | word <slowo> [--lang pl|en|nl | --crystal] | boot --plan | book seed|add|list|import-kaikki|serve --port N | mint <word>|--all | delegate|revoke <word> <scope> | run <word> [--plan] [input] | sync http://127.0.0.1:PORT | licenses | inventory\nDictionary: dictionary apply REQUEST.json (explicit --as custodian required).\nGlobal: --data DIR --as WORD. LOCAL DEMO; Apache-2.0 core; paid modules excluded.");
+        println!("ans init|install <word> | grow --plan|--apply [--hosts hosts.toml] | up | status | chat [to text] | skill list|add|grant|revoke|run | node [resolve /word/channel] | book resolve <word> | attest | word <slowo> [--lang pl|en|nl | --crystal] | boot --plan | book seed|add|list|import-kaikki|serve --port N | mint <word>|--all | delegate|revoke <word> <scope> | run <word> [--plan] [input] | sync http://127.0.0.1:PORT | licenses | inventory\nDictionary: dictionary list | show WORD_OR_ROOT | export WORD_OR_ROOT --expect-key HEX | verify PROOF_FILE --expect-key HEX | apply REQUEST.json (writes require explicit --as custodian).\nGlobal: --data DIR --as WORD. LOCAL DEMO; Apache-2.0 core; paid modules excluded.");
         return Ok(());
     }
     if cmd == "dictionary" {
         out(dictionary::cli(&root, &actor, &args[1..])?);
         return Ok(());
+    }
+    if cmd == "mcp" || (cmd == "book" && args.get(1).is_some_and(|a|a=="list")) {
+        // Read-only startup must not create config, identity, node ID or cache.
+        let c=if root.join("config.json").exists(){read_json(&root.join("config.json"))?}else{json!({"current":"","custodians":{}})};
+        if actor.is_empty(){actor=c["current"].as_str().unwrap_or("").into();}
+        if cmd=="mcp" {exploit::configure(mappings(&c));return mcp(&actor,&root);}
+        out(dictionary_read::legacy_list(&root,&actor)?);return Ok(());
     }
     if cmd == "word" {
         if args.iter().any(|s| s == "--crystal") {
@@ -555,16 +563,18 @@ fn run() -> Result<()> {
             return Ok(());
         }
         let w = args.get(1).ok_or(anyhow!("ans word <slowo> [--lang pl|en|nl]"))?;
-        if let Ok(c) = ans_dict::book::Book::open(&root.join("book")).and_then(|b| b.lookup(w)) {
-            let lang = args.iter().position(|s| s == "--lang").and_then(|i| args.get(i + 1));
-            let pick = |k: &str| c.of_kind(k).filter(|l| lang.map_or(true, |x| l.get("lang") == Some(x.as_str()))).map(|l| l.to_value()).take(12).collect::<Vec<_>>();
-            out(json!({"word":c.id,"root":c.root,"index":c.index(),"leaves":c.leaves.len(),"senses":pick("sense"),"translations":pick("translation"),"forms":pick("form"),"exec":pick("exec"),"book":root.join("book"),"verified":"merkle root recomputed on read"}));
-            return Ok(());
+        let records=dictionary_read::browse(&root,&actor,None)?;
+        if let Some(record)=records.iter().find(|r|r.kind=="word" && ans_dict::Crystal::parse(&r.content.to_string()).is_ok_and(|c|dictionary_read::matches(&c,w))) {
+            let lang=args.iter().position(|s|s=="--lang").and_then(|i|args.get(i+1)).map(String::as_str);
+            let mut value=dictionary_read::summary(record,lang,12)?;
+            value["book"]=json!(root.join("book"));out(value);return Ok(());
         }
         let lang = args.iter().position(|s| s == "--lang").and_then(|i| args.get(i + 1)).map(String::as_str);
         let (d, src) = word::load(&root)?;
         let mut r = word::lookup(&d, w, lang)?;
         r["book"] = json!(src);
+        r["provenance"]=json!("legacy_json_unverified");
+        r["lifecycle"]=Value::Null;
         println!("{}", serde_json::to_string_pretty(&r)?);
         return Ok(());
     }

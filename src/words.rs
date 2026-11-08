@@ -92,8 +92,7 @@ pub fn handle(cmd: &str, args: &[String], root: &Path, actor: &str) -> Result<Op
             json!({"ok":true,"file":b.add(&c)?,"root":c.root,"leaves":c.leaves.len(),"letters":letters.iter().map(|l| json!({"char":l.id,"root":l.root})).collect::<Vec<_>>()})
         }
         ("book", Some("list")) => {
-            let j = journal(root, actor)?; let p = peer_proofs(root);
-            json!({"node":node_id(root)?,"crystals":book(root)?.list()?.into_iter().map(|(f, c)| json!({"file":f,"id":c.id,"root":c.root,"leaves":c.leaves.len(),"minted_block":rule::mint_proof(&c.root,&j,&p,&valid).map(|e| e["seq"].clone())})).collect::<Vec<_>>()})
+            crate::dictionary_read::legacy_list(root,actor)?
         }
         ("book", Some("serve")) => {
             let port: u16 = flag("--port").ok_or_else(|| anyhow!("ans book serve --port N"))?.parse()?;
@@ -192,7 +191,7 @@ pub fn mcp_tools() -> Vec<Value> {
     vec![
         json!({"name":"dictionary_propose","description":"Prepare a typed dictionary lifecycle request for explicit offline custodian approval; never signs or executes","inputSchema":{"type":"object","properties":{"op_id":{"type":"string"},"command":{"type":"object"}},"required":["op_id","command"]}}),
         json!({"name":"word","description":"Look up a word crystal in the local book (any translation/form, diacritic-insensitive); root is re-verified","inputSchema":w}),
-        json!({"name":"list_words","description":"List crystals in the local book with their mint block (null = unminted)","inputSchema":{"type":"object","properties":{}}}),
+        json!({"name":"list_words","description":"Read public dictionary content with provenance; mint block is present only for a verified lifecycle native mint, null otherwise","inputSchema":{"type":"object","properties":{}}}),
         json!({"name":"mint_request","description":"Propose minting a word: runs the rule dry and queues a request. Does NOT mint; the custodian must run `ans mint`","inputSchema":w}),
         json!({"name":"run_plan","description":"Dry-run an executable word: rule check (minted, letters minted, delegation) and pinned package/hash resolution","inputSchema":w}),
         json!({"name":"run","description":"Run a minted, rule-accepted, delegated executable word (built-in functions only)","inputSchema":{"type":"object","properties":{"word":{"type":"string"},"input":{"type":"string"}},"required":["word"]}}),
@@ -204,8 +203,7 @@ pub fn mcp_call(name: &str, a: &Value, root: &Path, actor: &str) -> Option<Resul
     let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     Some(match name {
         "dictionary_propose" => crate::dictionary::proposal(a.clone()),
-        "word" => book(root).and_then(|b| find(&b, &w)).map(|c| json!({"word":c.id,"root":c.root,"index":c.index(),"leaves":c.leaves.len(),
-            "senses":c.of_kind("sense").take(8).map(|l| l.to_value()).collect::<Vec<_>>(),"translations":c.of_kind("translation").take(20).map(|l| l.to_value()).collect::<Vec<_>>(),"exec":c.of_kind("exec").map(|l| l.to_value()).collect::<Vec<_>>()})),
+        "word" => crate::dictionary_read::show(root,actor,&w,None).and_then(|record|crate::dictionary_read::summary(&record,None,20)),
         "list_words" => handle("book", &argv(&["book", "list"]), root, actor).map(Option::unwrap),
         "run_plan" => handle("run", &argv(&["run", &w, "--plan"]), root, actor).map(Option::unwrap),
         "run" => handle("run", &argv(&["run", &w, a["input"].as_str().unwrap_or("")]), root, actor).map(Option::unwrap),

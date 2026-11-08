@@ -13,6 +13,7 @@ mod rule;
 mod words;
 mod dictionary;
 mod dictionary_read;
+mod dictionary_web;
 use anyhow::{anyhow, bail, Result};
 use rand::RngCore;
 use serde_json::{json, Value};

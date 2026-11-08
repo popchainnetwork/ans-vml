@@ -742,6 +742,41 @@ pub fn verify(proof: &Proof, anchor: &str) -> Result<Value> {
     }] = json!(true);
     Ok(result)
 }
+pub fn visitor_data(path: &Path, anchor: &str) -> Result<(Value, Vec<u8>)> {
+    let proof: Proof = serde_json::from_slice(&read(path)?)?;
+    let verification = verify(&proof, anchor)?;
+    let entries = reduce(&proof.attestations, anchor, true)?;
+    let mut records = Vec::new();
+    for entry in entries.values() {
+        let c = crystal_entry(entry)?;
+        let native = proof
+            .attestations
+            .iter()
+            .find(|a| action(&a.event) == "word.mint" && d(&a.event)["root"] == entry.root.0)
+            .ok_or_else(|| anyhow!("Missing selected native mint"))?;
+        let outcome = proof
+            .attestations
+            .iter()
+            .find(|a| {
+                action(&a.event) == "dictionary.outcome"
+                    && d(&a.event)["receipt"]["entry"]["root"] == entry.root.0
+                    && d(&a.event)["receipt"]["entry"]["state"] == "minted"
+            })
+            .ok_or_else(|| anyhow!("Missing selected mint outcome"))?;
+        let record = item(
+            &c,
+            entry.crystal.clone(),
+            Some(entry.state.clone()),
+            Some(anchor.into()),
+            true,
+        );
+        records.push(json!({"id":c.id,"root":c.root,"kind":record.kind,"language":entry.word.language,"state":entry.state,"provenance":"verified_selected_proof_path","expected_signer":anchor,"native_sequence":seq(&native.event)?,"signed_sequence":seq(&outcome.event)?,"native_block_hash":native.block.block_hash_hex,"dependencies":d(&native.event)["letters"],"summary":summary(&record,None,12)?,"content":entry.crystal}));
+    }
+    Ok((
+        json!({"target_root":proof.entry.root,"verification":verification,"entries":records,"mode":"local_experimental_read_only_proof_snapshot","scope":"Selected minted entries only; imported/draft content is not loaded. No signer, current-history, execution, global naming or factual-truth claim."}),
+        serde_json::to_vec(&proof)?,
+    ))
+}
 pub fn summary(record: &Item, lang: Option<&str>, limit: usize) -> Result<Value> {
     let c = Crystal::parse(&serde_json::to_string(&record.content)?)?;
     let pick = |kind: &str| {
@@ -766,6 +801,9 @@ pub fn legacy_list(root: &Path, owner: &str) -> Result<Value> {
     )
 }
 pub fn cli(root: &Path, owner: &str, args: &[String]) -> Result<Value> {
+    if args.first().is_some_and(|a| a == "serve") {
+        return crate::dictionary_web::cli(args);
+    }
     let mut args = args.to_vec();
     let anchor = if let Some(i) = args.iter().position(|a| a == "--expect-key") {
         if i + 1 >= args.len() {
@@ -965,6 +1003,8 @@ mod tests {
         let path = standalone.0.join("proof.json");
         std::fs::write(&path, encoded).unwrap();
         let before = files(&standalone.0);
+        crate::dictionary_web::tests::actual_proof_http(&path, &key, false);
+
         assert_eq!(
             cli(
                 &standalone.0,
@@ -1118,6 +1158,8 @@ mod tests {
         let path = public.0.join("word.proof.json");
         std::fs::write(&path, encoded).unwrap();
         let before = files(&public.0);
+        crate::dictionary_web::tests::actual_proof_http(&path, &key, true);
+
         assert_eq!(
             cli(
                 &public.0,

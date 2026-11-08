@@ -114,6 +114,51 @@ not authenticated by the event signer: commitment checks are not an outer-block
 signature or independent proof of public-chain placement. No execution permission
 is enabled.
 
+## Local read-only visitor UI
+
+The visitor is a separate loopback-only mode, **not** the legacy `ans up` web
+runtime. It never opens an identity, signer, runtime configuration, cache or raw
+journal. Supply one reviewed exported public proof and its independently expected
+signer key:
+
+```sh
+"$ANS" dictionary serve rdzen.proof.json --expect-key "$EXPECTED_PK" --port 37121
+# Open http://127.0.0.1:37121/ in a browser on the same machine.
+# Stop with Ctrl-C. Startup prints the exact process PID and loopback URL.
+```
+
+The default port is 37121. Binding is hard-coded to `127.0.0.1`; there is no public
+bind flag. A missing, invalid or wrong-signer proof aborts startup, with no fallback
+sample data. Verification uses the shared Rust reader/protocol engine. Startup
+loads a single immutable public snapshot into memory. Editing the file later does
+not change the running snapshot; stop, review and restart explicitly.
+
+The English black/gold phone-responsive explorer shows the actual selected word
+and character entries, minted state, language, content roots, ordered dependencies,
+native block/event references, signed outcome sequences, and the pinned signer.
+Expandable technical details include source leaves. Search and character links
+inspect real entries; no mint, run, microphone, payment or invented live activity
+controls are present. This mode accepts verified minted proofs only: imported and
+draft entries are not loaded or mislabeled as minted. Selected proof source and
+timestamp metadata remain public in downloads; review them before sharing.
+
+Only these GET routes exist: `/`, `/app.css`, `/app.js`, `/favicon.svg`,
+`/api/entries`, `/api/entry/CONTENT_ROOT`, `/api/verification`, `/proof.json`.
+The proof download is normalized public proof JSON, not a directory/file-serving
+endpoint. Other paths return 404; traversal, malformed/oversized requests, request
+bodies, non-loopback Host/foreign Origin and non-GET methods are refused. In
+particular, POST `/api/exploit` is unavailable. Request headers are limited to
+8192 bytes, sockets have bounded timeouts, and responses close the connection.
+CSP, nosniff, no-referrer, same-origin resource policy and frame denial are set.
+Assets are embedded locally; there are no CDN scripts, analytics or external
+fonts. Dictionary strings use DOM text nodes, never HTML interpolation.
+
+The HTTP tests exercise real verified character and pinned-word proofs, list and
+entry results, proof download, security headers, POST/unknown/traversal/oversized
+request refusal and unchanged public input bytes. These are protocol/source tests,
+not a claim that a browser layout or phone screenshot has been visually checked.
+Do not expose the older mutation-capable web runtime as this visitor service.
+
 ## MCP
 
 Configure an MCP-capable local client to run the absolute path to `ans mcp` with an `ANS_HOME` environment pointing at its isolated demo directory. Transport is stdio. Tools include `word`, `list_words`, `mint_request`, `run_plan`, `run`; a mint request is not a signature or automatic approval. The integration test `tests/mcp_words.rs` exercises initialization, tool listing, lookup and unminted-run refusal. No model is bundled, loaded or remotely connected by this project.
@@ -222,3 +267,14 @@ wrong anchors, native payload tampering, and byte-identical public-only verifica
 with signer files removed and the writer lock held. Another test records genuinely
 signed word-mint receipts before later character lifecycles and confirms both the
 reader and writer reject that history without a new admitted operation.
+
+### Visitor increment verification
+
+The locked release build succeeds and the workspace passes **35 tests**, preserving
+all previous 32. Existing real character/word lifecycle tests now also exercise the
+visitor through TCP: list/detail/verification routes, normalized proof download,
+embedded assets, security headers, blocked POST/unknown/private-file/traversal and
+oversized requests, wrong anchors and unchanged public input bytes. Additional
+parser/source tests cover rebinding/cross-origin/body refusal and safe local DOM
+rendering. `node --check assets/dictionary-visitor.js` succeeds. These checks do not
+replace the separately pending browser/phone visual review.

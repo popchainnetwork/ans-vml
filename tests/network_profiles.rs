@@ -154,9 +154,30 @@ fn mainnet_rehearsal_full_flow_and_cross_network_refusal() {
     assert_eq!(minted["receipt"]["status"], "accepted", "{minted}");
     let pk = minted["outcome"]["xmss"]["pk"].as_str().unwrap().to_owned();
     // Migrated legacy operations work in the protected profile and replay strictly.
-    assert_eq!(r(&["--as", "alice", "mint-meaning", "oak", "en", "a large tree"])["service"], "dictionary");
-    assert_eq!(r(&["--as", "alice", "delegate", "oak", "review"])["service"], "dictionary");
-    assert_eq!(r(&["--as", "alice", "revoke", "oak", "review"])["service"], "dictionary");
+    // Outputs report the network the events were actually signed under.
+    for out in [
+        r(&["--as", "alice", "mint-meaning", "oak", "en", "a large tree"]),
+        r(&["--as", "alice", "delegate", "oak", "review"]),
+        r(&["--as", "alice", "revoke", "oak", "review"]),
+        r(&["--as", "alice", "mint", "oak"]),
+    ] {
+        assert_eq!(out["network"], "rehearsal", "{out}");
+    }
+    assert_eq!(r(&["--as", "alice", "mint", "oak"])["minted"][0]["network"], "rehearsal");
+    // Repeated global flags are refused before anything is signed (no leftover args in text).
+    let before = chain(&e.home(), "alice").len();
+    let mut dup: Vec<&str> = p.to_vec();
+    dup.extend_from_slice(&["--as", "alice", "mint-meaning", "oak", "en", "x", "--network", "mainnet"]);
+    let (ok, _, err) = e.run(&dup);
+    assert!(!ok && err.contains("given more than once"), "{err}");
+    let home = s(&e.home());
+    for flag in ["--as", "--data", "--confirm-network", "--custodian-key"] {
+        let mut dup: Vec<&str> = p.to_vec();
+        dup.extend_from_slice(&["--data", &home, "--as", "alice", "mint-meaning", "oak", "en", "x", flag, "y"]);
+        let (ok, _, err) = e.run(&dup);
+        assert!(!ok && err.contains("given more than once"), "{flag}: {err}");
+    }
+    assert_eq!(chain(&e.home(), "alice").len(), before);
     // Every signed event is bound to the rehearsal profile.
     let events = chain(&e.home(), "alice");
     assert!(events.iter().all(|ev| ev["body"]["network"] == "rehearsal"));
@@ -202,4 +223,15 @@ fn mainnet_rehearsal_full_flow_and_cross_network_refusal() {
     a.extend_from_slice(&["--as", "bob", "delegate", "o", "x"]);
     let (ok, _, err) = e.run(&a);
     assert!(!ok, "devnet journal must not open as rehearsal: {err}");
+
+    // `ans init` over a (former) protected custodian whose profile file was removed must refuse
+    // before writing any devnet key material.
+    let alice = e.home().join("custodians/alice");
+    std::fs::rename(alice.join("network.json"), e.tmp.join("alice-network.json.moved")).unwrap();
+    let (ok, _, err) = e.run(&["init", "alice"]);
+    assert!(!ok && err.contains("protected network profile"), "{err}");
+    assert!(!alice.join("xmss-demo.seed").exists() && !alice.join("xmss-demo.state").exists());
+    let (ok, _, err) = e.run(&["--as", "alice", "delegate", "oak", "x"]);
+    assert!(!ok, "{err}");
+    assert!(!alice.join("xmss-demo.seed").exists() && !alice.join("xmss-demo.state").exists());
 }

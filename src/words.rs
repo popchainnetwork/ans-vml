@@ -53,6 +53,13 @@ fn find(b: &Book, w: &str) -> Result<Crystal> {
     }
     b.lookup(w)
 }
+/// Network profile of the signed journal the command wrote to.
+fn signed_network(root: &Path, actor: &str) -> String {
+    journal(root, actor)
+        .and_then(|j| crate::network::of_journal(&j))
+        .map(|n| n.as_str().to_owned())
+        .unwrap_or_else(|e| format!("unknown: {e}"))
+}
 fn valid(e: &Value) -> bool { exploit::event_valid(e) }
 pub const ALPHABET: &str = "abcdefghijklmnopqrstuvwxyząćęłńóśźż";
 /// Minted letter lookup against the book + local journal + stored peer proofs (read fresh each call).
@@ -118,7 +125,7 @@ pub fn handle(cmd: &str, args: &[String], root: &Path, actor: &str) -> Result<Op
             let b = book(root)?;
             let mut res = vec![];
             for ch in ALPHABET.chars() { let l = ucd.letter(ch)?; b.add(&l)?; res.push(mint_one(root, actor, &d, &l)?); }
-            json!({"ok":true,"layer":1,"service":"dictionary","lifecycle_adapter":"adopt_book_crystal","alphabet":ALPHABET,"minted":res,"network":"none: local journal only"})
+            json!({"ok":true,"layer":1,"service":"dictionary","lifecycle_adapter":"adopt_book_crystal","alphabet":ALPHABET,"minted":res,"network":signed_network(root, actor),"scope":"local journal only"})
         }
         ("mint", _) => {
             let d = cdir(root, actor)?;
@@ -127,7 +134,7 @@ pub fn handle(cmd: &str, args: &[String], root: &Path, actor: &str) -> Result<Op
             targets.sort_by_key(|c| c.kind != ans_dict::CrystalKind::Letter); // layer 1 before layer 2
             let mut res = vec![];
             for c in targets { res.push(match mint_one(root, actor, &d, &c) { Ok(v) => v, Err(e) => json!({"word":c.id,"root":c.root,"refused":e.to_string()}) }); }
-            json!({"ok":true,"custodian":actor,"service":"dictionary","lifecycle_adapter":"adopt_book_crystal","minted":res,"network":"none: local journal only","private_key":"never printed"})
+            json!({"ok":true,"custodian":actor,"service":"dictionary","lifecycle_adapter":"adopt_book_crystal","minted":res,"network":signed_network(root, actor),"scope":"local journal only","private_key":"never printed"})
         }
         ("mint-meaning", _) => {
             let usage = "ans mint-meaning <word> <lang> <text>";

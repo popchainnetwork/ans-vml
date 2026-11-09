@@ -618,6 +618,12 @@ fn attempt_id(base: &str, latest: Option<(u64, String, String)>) -> OperationId 
         Some((_, _, op)) => OperationId(op),
     }
 }
+/// Network profile the custodian's signed events are bound to (as written in the journal).
+fn signed_network(journal: &[Value]) -> String {
+    crate::network::of_journal(journal)
+        .map(|n| n.as_str().to_owned())
+        .unwrap_or_else(|e| format!("unknown: {e}"))
+}
 fn custodian_ready(root: &Path, owner: &str) -> Result<std::path::PathBuf> {
     if owner.is_empty() {
         bail!("Explicit local custodian required (--as)");
@@ -680,7 +686,7 @@ pub fn legacy_annotation(root: &Path, owner: &str, crystal: &Crystal, command: C
     let latest = latest_attempt(&journal, &base, |c| serde_json::to_value(c).ok().as_ref() == Some(&wanted))?;
     if let Some((_, status, op)) = &latest {
         if status == "accepted" {
-            return Ok(json!({"ok":true,"already":true,"action":format!("word.{stage}"),"word":crystal.id,"root":crystal.root,"op_id":op,"service":"dictionary","network":"none: local journal only"}));
+            return Ok(json!({"ok":true,"already":true,"action":format!("word.{stage}"),"word":crystal.id,"root":crystal.root,"op_id":op,"service":"dictionary","network":signed_network(&journal),"scope":"local journal only"}));
         }
     }
     if let Some(state) = already {
@@ -706,7 +712,7 @@ pub fn legacy_annotation(root: &Path, owner: &str, crystal: &Crystal, command: C
         .rev()
         .find(|e| action(e) == format!("word.{stage}") && data(e)["op_id"] == result["op_id"])
         .ok_or_else(|| anyhow!("Dictionary {stage} accepted without a native effect"))?;
-    Ok(json!({"ok":true,"action":format!("word.{stage}"),"word":crystal.id,"root":crystal.root,"block":native["seq"],"op_id":result["op_id"],"retry":result["retry"],"service":"dictionary","lifecycle_adapter":"legacy_annotation","network":"none: local journal only","private_key":"never printed"}))
+    Ok(json!({"ok":true,"action":format!("word.{stage}"),"word":crystal.id,"root":crystal.root,"block":native["seq"],"op_id":result["op_id"],"retry":result["retry"],"service":"dictionary","lifecycle_adapter":"legacy_annotation","network":crate::network::of_event(native),"scope":"local journal only","private_key":"never printed"}))
 }
 /// Adopt an existing book/UCD crystal into the typed dictionary lifecycle and mint it.
 /// Used by legacy `ans mint` / `mint-alphabet` so there is one ledger path: draft → validate → mint
@@ -750,7 +756,8 @@ pub fn adopt_book_crystal(root: &Path, owner: &str, crystal: &Crystal) -> Result
                 "root": crystal.root,
                 "block": block,
                 "layer": if crystal.kind == CrystalKind::Letter { 1 } else { 2 },
-                "network": "none: local journal only",
+                "network": signed_network(&crate::exploit::journal(owner, &dir)?),
+                        "scope": "local journal only",
                 "private_key": "never printed"
             }));
         }
@@ -856,7 +863,8 @@ pub fn adopt_book_crystal(root: &Path, owner: &str, crystal: &Crystal) -> Result
                         "op_id": minted["op_id"],
                         "retry": minted["retry"],
                         "state": "minted",
-                        "network": "none: local journal only",
+                        "network": signed_network(&crate::exploit::journal(owner, &dir)?),
+                        "scope": "local journal only",
                         "private_key": "never printed"
                     }));
                 }
@@ -2906,6 +2914,7 @@ mod tests {
         let before = h.journal().len();
         let m = legacy(&h, &["mint-meaning", "ab", "en", "a test word"]).unwrap();
         assert_eq!(m["service"], "dictionary");
+        assert_eq!(m["network"], "devnet");
         assert_eq!(m["lifecycle_adapter"], "legacy_annotation");
         assert!(m["op_id"].as_str().unwrap().starts_with("legacy-meaning-"));
         // intent + native + outcome, signed and bound.
@@ -3104,7 +3113,8 @@ mod tests {
         let path = dir(&h).join("chain.ndjson");
         let text = std::fs::read_to_string(&path).unwrap();
         std::fs::write(&path, text.replace("\"text\":\"honest\"", "\"text\":\"forged\"")).unwrap();
-        assert!(crate::exploit::journal("alice", &dir(&h)).is_err());
+        let err = crate::exploit::journal("alice", &dir(&h)).unwrap_err().to_string();
+        assert!(err.contains("Invalid journal block"), "{err}");
     }
     #[test]
     fn run_and_skill_run_fail_closed_unless_dictionary_rules_pass() {

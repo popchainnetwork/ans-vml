@@ -346,7 +346,7 @@ fn web_connection(mut stream: TcpStream, web: Arc<Web>) -> Result<()> {
             return json_response(
                 &mut stream,
                 403,
-                json!({"ok":false,"error":"Najpierw ans init <słowo>"}),
+                json!({"ok":false,"error":"Run ans init <word> first"}),
                 None,
             );
         }
@@ -374,7 +374,7 @@ fn web_connection(mut stream: TcpStream, web: Arc<Web>) -> Result<()> {
             return json_response(
                 &mut stream,
                 401,
-                json!({"ok":false,"error":"Zaloguj się"}),
+                json!({"ok":false,"error":"Log in first"}),
                 None,
             );
         };
@@ -387,7 +387,7 @@ fn web_connection(mut stream: TcpStream, web: Arc<Web>) -> Result<()> {
             return json_response(
                 &mut stream,
                 403,
-                json!({"ok":false,"error":"Ta sesja ma innego custodiana"}),
+                json!({"ok":false,"error":"This session belongs to a different custodian"}),
                 None,
             );
         }
@@ -400,7 +400,7 @@ fn web_connection(mut stream: TcpStream, web: Arc<Web>) -> Result<()> {
 }
 fn up(root: &Path, c: &Value) -> Result<()> {
     if c["custodians"].as_object().unwrap().is_empty() {
-        bail!("Najpierw ans init <słowo>")
+        bail!("Run ans init <word> first")
     };
     let web_port = c["web_port"].as_u64().unwrap() as u16;
     let listener = TcpListener::bind(("127.0.0.1", web_port))?;
@@ -522,12 +522,20 @@ fn attest(c: &Value) -> Result<Value> {
         json!({"ok":true,"anchor":417696,"KAT":{"WOTS_reference":true,"XMSS_reference":true,"XMSSMT_reference_signatures":true,"tampered_message_rejected":true},"PQ_schemes":pq::schemes(),"GEN002":reference,"golden_vector_id":hex::encode(Sha3_256::digest(&g)),"chains":chains,"scope":"local cryptographic/kernel checks, not a consensus or product certification"}),
     )
 }
+const GLOBAL_FLAGS: [&str; 5] = ["--data", "--as", "--network", "--confirm-network", "--custodian-key"];
 fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut root = std::env::var("ANS_HOME")
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir()?.join("ans-data"));
     let mut actor = String::new();
+    // Global flags may appear once. A repeated flag would leave a leftover copy in the
+    // positional arguments (e.g. signed into meaning text), so it is refused outright.
+    for flag in GLOBAL_FLAGS {
+        if args.iter().filter(|a| a.as_str() == flag).count() > 1 {
+            bail!("Global flag {flag} given more than once; refusing an ambiguous command");
+        }
+    }
     for flag in ["--data", "--as"] {
         if let Some(i) = args.iter().position(|s| s == flag) {
             let value = args
@@ -891,5 +899,27 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("ans: {e}");
         std::process::exit(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// User-facing pages and runtime messages are English (dictionary content may be any language).
+    #[test]
+    fn user_facing_strings_are_english() {
+        let polish = |t: &str| t.chars().any(|c| "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ".contains(c));
+        for (name, page) in [("world", super::WORLD), ("login", super::LOGIN)] {
+            assert!(!polish(page), "{name} page has Polish text");
+            assert!(!page.contains("lang=\"pl\""), "{name}");
+        }
+        for (name, src) in [("exploit", include_str!("exploit.rs")), ("main", include_str!("main.rs")), ("grow", include_str!("grow.rs")), ("chip", include_str!("chip.rs"))] {
+            let src = src.split("#[cfg(test)]").next().unwrap();
+            for line in src.lines().filter(|l| l.contains("bail!(") || l.contains("anyhow!(") || l.contains("\"error\"") || l.contains("\"warning\"") || l.contains("\"notice\"") || l.contains("<html")) {
+                assert!(!polish(line), "{name}: {line}");
+            }
+            for word in ["Niepoprawn", "Nieznan", "Najpierw", "Zaloguj", "wyprzedza", "Brak "] {
+                assert!(!src.contains(&format!("\"{word}")), "{name}: {word}");
+            }
+        }
     }
 }

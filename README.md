@@ -286,9 +286,27 @@ for verification; secret seed/counter data is never printed.
 Mint does not enable execution. `ans mint` and `ans mint-alphabet` now **adopt** existing book/UCD crystals through
 the same typed dictionary draft→validate→mint service (deterministic `legacy-*`
 operation IDs, one native mint, dependency checks). They do not invent meanings or
-rights. `mint-meaning`, `delegate`, `revoke`, `run`, MCP `run`/`skill_run`, and
-`/api/exploit` remain separate entry points and are not execution-enabled by this
-migration. Prefer `dictionary write|draft|validate|mint` for new authored content.
+rights. Prefer `dictionary write|draft|validate|mint` for new authored content.
+
+`ans mint-meaning <word> <lang> <text>`, `ans delegate <word> <scope>` and
+`ans revoke <word> <scope>` are typed dictionary operations (`meaning`, `delegate`,
+`revoke` commands) on a word whose lifecycle is already `minted`. Each writes a signed
+`dictionary.intent`, exactly one native `word.meaning|word.delegate|word.revoke` effect
+bound to the same `op_id`, and a `dictionary.outcome`. Legacy calls use deterministic,
+attempt-scoped IDs (`legacy-meaning-ROOT-TEXTHASH`, `legacy-delegate|revoke-ROOT-SCOPEHASH-gN`,
+`-retry-SEQ` after a rejected/interrupted attempt); repeating an accepted call signs
+nothing. The signer refuses these native actions outside an open dictionary intent with
+the same `op_id`, and strict replay refuses mismatched payloads, revokes without an active
+grant, duplicate effects and effects without an accepted outcome. Public proofs do not
+include meanings or grants.
+
+Execution fails closed unless dictionary rules pass: `ans run` and MCP `run`/`run_plan`
+require a strictly replayed `minted` lifecycle, an active dictionary delegation for the
+scope, and the word rule (exec leaf + `Cargo.lock` checksum; built-in functions only).
+Peer-supplied mint proofs and bare legacy `word.delegate` events no longer authorize
+execution. `skill_run` (CLI `ans skill run`, MCP and the `/api/exploit` web route) is
+disabled with an explicit error. Other `/api/exploit` chat/contact operations are unchanged,
+and the read-only visitor server never exposes `/api/exploit`.
 
 ### Fresh disposable bootstrap and the native rdzeń flow
 
@@ -363,7 +381,7 @@ done
 "$ANS" --as alice dictionary apply "$ANS_HOME/mint.json"
 ```
 
-The first four receipts are accepted; `run` is rejected. This service intentionally has **no executable-permission approval adapter** yet: even a minted entry cannot execute through it. Legacy `ans run`/delegation remain separate older interfaces and are NOT claimed to enforce this new lifecycle. For word minting, every referenced character must already have a native mint in the same local journal. Golden word roots and fixtures remain unchanged.
+The first four receipts are accepted; `run` is rejected. This service intentionally has **no executable-permission approval adapter** yet: even a minted entry cannot execute through it. The typed `run` command stays refused; `ans run` is the only execution path and it checks the dictionary lifecycle and dictionary delegations (see above). For word minting, every referenced character must already have a native mint in the same local journal. Golden word roots and fixtures remain unchanged.
 
 Same ID + same command replays the original receipt while recording a new attempt; same ID + a different command is rejected. A new ID does not authorize repeating a mint. If a canonical first intent lacks a durable outcome on restart, it is closed as `interrupted`, not resumed. An unfinished same-command retry instead receives the completed original receipt (Accepted, Rejected or Interrupted); an unfinished conflicting retry is Rejected. Recovery validates the original completed prefix and never repeats native effects. Already-signed incompatible historical recovery outcomes are not rewritten or automatically repaired; strict replay still refuses them. If a native `word.mint` for the same operation ID is already durable and still contiguous with its intent, recovery completes that mint as accepted without a second native effect. Unrelated signed events must not be admitted while a dictionary intent is pending; interleaved histories fail closed rather than inventing adjacency.
 
@@ -371,7 +389,7 @@ Same ID + same command replays the original receipt while recording a new attemp
 
 Offline dictionary admission takes an exclusive `dictionary.lock`, then each signed
 append takes the exclusive custodian `writer.lock` while opening the XMSSMT signer.
-Legacy `record_local` callers (delegate/revoke/mint-meaning/skills) share **only**
+Remaining legacy `record_local` callers (skills, chat) share **only**
 `writer.lock`, so they serialize signatures/indices with dictionary appends but do
 not hold `dictionary.lock` for a whole lifecycle. Concurrent dictionary writers on
 the same custodian fail closed with "Dictionary service busy".

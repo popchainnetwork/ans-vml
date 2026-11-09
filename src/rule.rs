@@ -30,7 +30,8 @@ pub fn mint_proof<'a>(root: &str, journal: &'a [Value], peer_proofs: &'a [Value]
 
 pub fn delegated(root: &str, scope: &str, journal: &[Value], valid: &dyn Fn(&Value) -> bool) -> bool {
     let mut ok = false;
-    for e in journal.iter().filter(|e| root_of(e) == root && e["body"]["data"]["scope"] == scope && valid(e)) {
+    // Only dictionary-service grants count; bare legacy word.delegate events are ignored.
+    for e in journal.iter().filter(|e| root_of(e) == root && e["body"]["data"]["scope"] == scope && e["body"]["data"]["service"] == "dictionary" && valid(e)) {
         match action(e) { "word.delegate" => ok = true, "word.revoke" => ok = false, _ => {} }
     }
     ok
@@ -96,7 +97,15 @@ mod tests {
         assert!(check(&w, Use::Store, &j, &[], &v, &no_s)["reason"].as_str().unwrap().contains("not minted"));
         let r = check(&w, Use::Run { scope: "run" }, &j, &[], &v, &all);
         assert!(r["reason"].as_str().unwrap().contains("no signed delegation"), "{r}");
-        crate::exploit::record_local("alice", &d, "word.delegate", json!({"word":"hash","root":w.root,"scope":"run"})).unwrap();
+        // The signer refuses grants written outside a dictionary transaction.
+        let bare = crate::exploit::record_local("alice", &d, "word.delegate", json!({"word":"hash","root":w.root,"scope":"run"}));
+        assert!(bare.unwrap_err().to_string().contains("dictionary lifecycle"));
+        let in_tx = |id: &str, act: &str| {
+            let intent = crate::exploit::record_local("alice", &d, "dictionary.intent", json!({"request":{"op_id":id}})).unwrap();
+            crate::exploit::record_local("alice", &d, act, json!({"word":"hash","root":w.root,"scope":"run","op_id":id,"service":"dictionary"})).unwrap();
+            crate::exploit::record_local("alice", &d, "dictionary.outcome", json!({"intent_hash":intent["hash"]})).unwrap();
+        };
+        in_tx("grant-1", "word.delegate");
         let j = crate::exploit::journal("alice", &d).unwrap();
         let r = check(&w, Use::Run { scope: "run" }, &j, &[], &v, &all);
         assert_eq!(r["accept"], true, "{r}");
@@ -111,7 +120,7 @@ mod tests {
         t["leaves"][0]["value"] = json!("x");
         assert!(Crystal::parse(&t.to_string()).is_err());
         // revoke
-        crate::exploit::record_local("alice", &d, "word.revoke", json!({"word":"hash","root":w.root,"scope":"run"})).unwrap();
+        in_tx("revoke-1", "word.revoke");
         let j = crate::exploit::journal("alice", &d).unwrap();
         assert_eq!(check(&w, Use::Run { scope: "run" }, &j, &[], &v, &all)["accept"], false);
         let _ = std::fs::remove_dir_all(&d);

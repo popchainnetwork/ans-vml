@@ -131,29 +131,48 @@ pub fn handle(cmd: &str, args: &[String], root: &Path, actor: &str) -> Result<Op
         }
         ("mint-meaning", _) => {
             let usage = "ans mint-meaning <word> <lang> <text>";
-            let d = cdir(root, actor)?;
+            cdir(root, actor)?;
             let c = find(&book(root)?, &arg(1, usage)?)?;
-            let (lang, text) = (arg(2, usage)?, arg(3, usage)?);
-            let j = exploit::journal(actor, &d)?;
-            let p = peer_proofs(root);
-            let wm = rule::mint_proof(&c.root, &j, &p, &valid).ok_or_else(|| anyhow!("refused: word {} is not minted (layer 2) — a meaning must reference a minted word", c.id))?;
+            let (lang, text) = (arg(2, usage)?, args[3.min(args.len())..].join(" "));
+            if text.is_empty() { bail!("usage: {usage}"); }
             if c.kind == ans_dict::CrystalKind::Letter { bail!("meanings attach to words, not letters"); }
-            let e = exploit::record_local(actor, &d, "word.meaning", json!({"layer":3,"word":c.id,"word_root":c.root,"word_block":wm["seq"],"lang":lang,"text":text,"text_sha3":hex::encode(<sha3::Sha3_256 as sha3::Digest>::digest(text.as_bytes()))}))?;
-            json!({"ok":true,"layer":3,"word":c.id,"word_block":wm["seq"],"block":e["seq"]})
+            let command = crate::dictionary::Command::Meaning { root: crate::dictionary::ContentRoot(c.root.clone()), lang: lang.clone(), text };
+            let mut v = crate::dictionary::legacy_annotation(root, actor, &c, command)?;
+            v["layer"] = json!(3);
+            v["lang"] = json!(lang);
+            v
         }
         ("delegate", _) | ("revoke", _) => {
-            let d = cdir(root, actor)?;
-            let c = find(&book(root)?, &arg(1, "ans delegate|revoke <word> <scope>")?)?;
-            let scope = arg(2, "ans delegate|revoke <word> <scope>")?;
-            let e = exploit::record_local(actor, &d, &format!("word.{cmd}"), json!({"word":c.id,"root":c.root,"scope":scope}))?;
-            json!({"ok":true,"action":format!("word.{cmd}"),"word":c.id,"scope":scope,"block":e["seq"]})
+            let usage = "ans delegate|revoke <word> <scope>";
+            cdir(root, actor)?;
+            let c = find(&book(root)?, &arg(1, usage)?)?;
+            let scope = arg(2, usage)?;
+            let target = crate::dictionary::ContentRoot(c.root.clone());
+            let command = if cmd == "delegate" {
+                crate::dictionary::Command::Delegate { root: target, scope: scope.clone() }
+            } else {
+                crate::dictionary::Command::Revoke { root: target, scope: scope.clone() }
+            };
+            let mut v = crate::dictionary::legacy_annotation(root, actor, &c, command)?;
+            v["scope"] = json!(scope);
+            v
         }
         ("run", _) => {
+            // Execution is routed through dictionary rules: strict-replayed minted lifecycle,
+            // an active dictionary delegation for the scope, then the word rule. Fails closed.
             let c = find(&book(root)?, &arg(1, "ans run <word> [--plan] [input]")?)?;
             let scope = flag("--scope").unwrap_or_else(|| "run".into());
             let j = journal(root, actor)?;
-            let mut v = rule::check(&c, rule::Use::Run { scope: &scope }, &j, &peer_proofs(root), &valid, &letter_lookup(root, &j));
+            let lifecycle = crate::dictionary_read::show(root, actor, &c.root, None).ok().and_then(|i| i.lifecycle);
+            if lifecycle != Some(crate::dictionary::State::Minted) {
+                bail!("refused: {} is not minted: no minted dictionary lifecycle; execution requires dictionary rules", c.id);
+            }
+            if !crate::dictionary::active_grants(&j).contains(&(c.root.clone(), scope.clone())) {
+                bail!("refused: no active dictionary delegation for scope {scope}; run `ans --as OWNER delegate {} {scope}`", c.id);
+            }
+            let mut v = rule::check(&c, rule::Use::Run { scope: &scope }, &j, &[], &valid, &letter_lookup(root, &j));
             if v["accept"] != true { bail!("refused: {}", v["reason"].as_str().unwrap_or("")); }
+            v["service"] = json!("dictionary");
             if args.iter().any(|a| a == "--plan") { v["dry_run"] = json!(true); return Ok(Some(v)); }
             let input = args.iter().skip(2).find(|a| !a.starts_with("--") && Some(a.as_str()) != Some(scope.as_str())).cloned().unwrap_or_default();
             v["output"] = json!(exec::run_builtin(v["resolved"]["function"].as_str().unwrap(), &input)?);

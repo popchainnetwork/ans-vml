@@ -190,6 +190,10 @@ fn replay_events(
     let mut prior_event: Option<&Value> = None;
     let mut owner: Option<&str> = None;
     let mut minted: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+    // Dictionary-service meaning/delegate/revoke effects: each op_id once, each bound by an outcome.
+    let mut annotation_effects: BTreeSet<String> = BTreeSet::new();
+    let mut bound_effects: BTreeSet<String> = BTreeSet::new();
+    let mut grants: BTreeSet<(String, String)> = BTreeSet::new();
     for e in events {
         signature_check(e, expected)?;
         let n = seq(e)?;
@@ -250,6 +254,13 @@ fn replay_events(
                     bail!("Selected proof includes a legacy mint");
                 }
             }
+            "word.meaning" | "word.delegate" | "word.revoke" if !selected => {
+                if d(e)["service"] == "dictionary"
+                    && !annotation_effects.insert(text(d(e), "op_id")?.to_owned())
+                {
+                    bail!("Duplicate native dictionary effect");
+                }
+            }
             "dictionary.outcome" => {
                 let intent_hash = text(d(e), "intent_hash")?;
                 let (request, canonical, hash, intent) = intents
@@ -305,13 +316,7 @@ fn replay_events(
                             }
                         }
                         command => {
-                            let root = match command {
-                                Command::Validate { root }
-                                | Command::Mint { root }
-                                | Command::Inspect { root }
-                                | Command::Run { root } => root,
-                                _ => unreachable!(),
-                            };
+                            let root = command.target().expect("non-draft command has a target");
                             let old = entries
                                 .get(&root.0)
                                 .ok_or_else(|| anyhow!("Transition has no draft"))?;
@@ -389,6 +394,64 @@ fn replay_events(
                                 Command::Run { .. } => {
                                     bail!("Accepted execution has no approval adapter")
                                 }
+                                Command::Meaning { .. }
+                                | Command::Delegate { .. }
+                                | Command::Revoke { .. } => {
+                                    if selected {
+                                        bail!("Proof contains unrelated history");
+                                    }
+                                    if old.state != State::Minted || next.state != State::Minted {
+                                        bail!("Annotation requires an unchanged minted lifecycle");
+                                    }
+                                    let native_action = command.annotation_action().unwrap();
+                                    let native = events
+                                        .iter()
+                                        .find(|m| {
+                                            action(m) == native_action
+                                                && d(m)["op_id"] == request.op_id.0
+                                                && seq(m).is_ok_and(|s| {
+                                                    s > seq(intent).unwrap_or(u64::MAX) && s < n
+                                                })
+                                        })
+                                        .ok_or_else(|| anyhow!("Missing native {native_action} event"))?;
+                                    follows(native, intent)?;
+                                    follows(e, native)?;
+                                    let (block, _) = minted
+                                        .get(&root.0)
+                                        .ok_or_else(|| anyhow!("Annotation before native mint"))?;
+                                    if crate::dictionary::annotation_payload(command, &request.op_id, &c, *block)
+                                        .as_ref()
+                                        != Some(d(native))
+                                    {
+                                        bail!("Native annotation payload mismatch");
+                                    }
+                                    let key = (root.0.clone(), String::new());
+                                    match command {
+                                        Command::Meaning { lang, text, .. } => {
+                                            if c.kind == CrystalKind::Letter
+                                                || !crate::dictionary::valid_lang(lang)
+                                                || text.trim().is_empty()
+                                                || text.len() > 4096
+                                            {
+                                                bail!("Invalid meaning");
+                                            }
+                                        }
+                                        Command::Delegate { scope, .. } => {
+                                            if !crate::dictionary::valid_scope(scope)
+                                                || !grants.insert((key.0.clone(), scope.clone()))
+                                            {
+                                                bail!("Invalid or duplicate delegation");
+                                            }
+                                        }
+                                        Command::Revoke { scope, .. } => {
+                                            if !grants.remove(&(key.0.clone(), scope.clone())) {
+                                                bail!("Revoke without active delegation");
+                                            }
+                                        }
+                                        _ => unreachable!(),
+                                    }
+                                    bound_effects.insert(request.op_id.0.clone());
+                                }
                                 _ => unreachable!(),
                             }
                         }
@@ -403,6 +466,9 @@ fn replay_events(
     }
     if intents.len() != completed.len() {
         bail!("Incomplete operation; use a stable public snapshot");
+    }
+    if annotation_effects != bound_effects {
+        bail!("Native dictionary effect without an accepted outcome");
     }
     Ok(entries)
 }

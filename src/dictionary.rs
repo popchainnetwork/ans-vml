@@ -34,6 +34,90 @@ pub enum Command {
     Mint { root: ContentRoot },
     Inspect { root: ContentRoot },
     Run { root: ContentRoot },
+    /// Layer-3 meaning attached to a minted word (not a letter). Native effect: `word.meaning`.
+    Meaning { root: ContentRoot, lang: String, text: String },
+    /// Signed execution grant for a minted root. Native effect: `word.delegate`.
+    Delegate { root: ContentRoot, scope: String },
+    /// Withdraws an active grant. Native effect: `word.revoke`.
+    Revoke { root: ContentRoot, scope: String },
+}
+impl Command {
+    /// Root of an existing lifecycle the command transitions or annotates (None for Draft).
+    pub fn target(&self) -> Option<&ContentRoot> {
+        match self {
+            Command::Draft { .. } => None,
+            Command::Validate { root }
+            | Command::Mint { root }
+            | Command::Inspect { root }
+            | Command::Run { root }
+            | Command::Meaning { root, .. }
+            | Command::Delegate { root, .. }
+            | Command::Revoke { root, .. } => Some(root),
+        }
+    }
+    /// Native journal action written for annotation commands on a minted root.
+    pub fn annotation_action(&self) -> Option<&'static str> {
+        match self {
+            Command::Meaning { .. } => Some("word.meaning"),
+            Command::Delegate { .. } => Some("word.delegate"),
+            Command::Revoke { .. } => Some("word.revoke"),
+            _ => None,
+        }
+    }
+}
+/// Language tag for meanings: 2–35 ASCII letters, digits or hyphens.
+pub fn valid_lang(lang: &str) -> bool {
+    (2..=35).contains(&lang.len()) && lang.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+}
+/// Grant scopes: 1–64 lowercase ASCII letters, digits, '-', '_' or '.'.
+pub fn valid_scope(scope: &str) -> bool {
+    (1..=64).contains(&scope.len())
+        && scope
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'-' | b'_' | b'.'))
+}
+pub fn text_sha3(text: &str) -> String {
+    hex::encode(Sha3_256::digest(text.as_bytes()))
+}
+/// Expected native payload for an annotation command. Shared by the writer and strict replay
+/// so a signed effect that differs in any field is refused.
+pub fn annotation_payload(command: &Command, op_id: &OperationId, c: &Crystal, mint_block: u64) -> Option<Value> {
+    let base = |extra: Value| {
+        let mut v = json!({"word":c.id,"root":c.root,"op_id":op_id,"service":"dictionary","chain":"local test journal; not mainnet"});
+        for (k, x) in extra.as_object().unwrap() {
+            v[k] = x.clone();
+        }
+        v
+    };
+    Some(match command {
+        Command::Meaning { lang, text, .. } => base(json!({"layer":3,"word_root":c.root,"word_block":mint_block,"lang":lang,"text":text,"text_sha3":text_sha3(text)})),
+        Command::Delegate { scope, .. } | Command::Revoke { scope, .. } => base(json!({"scope":scope})),
+        _ => return None,
+    })
+}
+/// Active grants derived from signed dictionary-service delegate/revoke effects, in journal order.
+/// Callers must pass a journal that strict replay has accepted.
+pub fn active_grants(journal: &[Value]) -> std::collections::BTreeSet<(String, String)> {
+    let mut grants = std::collections::BTreeSet::new();
+    for e in journal {
+        if data(e)["service"] != "dictionary" {
+            continue;
+        }
+        let key = (
+            data(e)["root"].as_str().unwrap_or("").to_owned(),
+            data(e)["scope"].as_str().unwrap_or("").to_owned(),
+        );
+        match action(e) {
+            "word.delegate" => {
+                grants.insert(key);
+            }
+            "word.revoke" => {
+                grants.remove(&key);
+            }
+            _ => {}
+        }
+    }
+    grants
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -137,13 +221,7 @@ fn evaluate(
             })
         }
         command => {
-            let root = match command {
-                Command::Validate { root }
-                | Command::Mint { root }
-                | Command::Inspect { root }
-                | Command::Run { root } => root,
-                _ => unreachable!(),
-            };
+            let root = command.target().expect("non-draft command has a target");
             let mut e = entries
                 .get(&root.0)
                 .cloned()
@@ -183,6 +261,35 @@ fn evaluate(
                 }
                 Command::Inspect{..} => {},
                 Command::Run{..} => bail!("Execution refused: this service has no executable-permission approval adapter; minting is not permission"),
+                Command::Meaning { .. } | Command::Delegate { .. } | Command::Revoke { .. } => {
+                    if e.state != State::Minted { bail!("Requires a minted dictionary word; mint it first"); }
+                    if journal.iter().any(|v| data(v)["op_id"] == req.op_id.0 && command.annotation_action() == Some(action(v))) {
+                        bail!("A native effect for this operation already exists; automatic reconciliation is refused");
+                    }
+                    let grants = active_grants(journal);
+                    match command {
+                        Command::Meaning { lang, text, .. } => {
+                            if c.kind == CrystalKind::Letter { bail!("Meanings attach to words, not letters"); }
+                            if !valid_lang(lang) { bail!("Meaning language must be 2–35 ASCII letters, digits or hyphens"); }
+                            if text.trim().is_empty() || text.len() > 4096 { bail!("Meaning text must contain 1–4096 bytes"); }
+                        }
+                        Command::Delegate { scope, .. } => {
+                            if !valid_scope(scope) { bail!("Scope must be 1–64 lowercase ASCII letters, digits, '-', '_' or '.'"); }
+                            if grants.contains(&(c.root.clone(), scope.clone())) { bail!("Scope is already delegated for this root"); }
+                        }
+                        Command::Revoke { scope, .. } => {
+                            if !valid_scope(scope) { bail!("Scope must be 1–64 lowercase ASCII letters, digits, '-', '_' or '.'"); }
+                            if !grants.contains(&(c.root.clone(), scope.clone())) { bail!("No active delegation for this root and scope"); }
+                        }
+                        _ => unreachable!(),
+                    }
+                    let block = crate::rule::mint_proof(&c.root, journal, &[], &crate::exploit::event_valid)
+                        .filter(|m| data(m)["service"] == "dictionary")
+                        .and_then(|m| m["seq"].as_u64())
+                        .ok_or_else(|| anyhow!("Minted lifecycle has no dictionary native mint"))?;
+                    let payload = annotation_payload(command, &req.op_id, &c, block).unwrap();
+                    append(owner, dir, command.annotation_action().unwrap(), payload)?;
+                }
                 _=>unreachable!()
             }
             Ok(e)
@@ -219,49 +326,9 @@ fn transact(
             "Initialize a fresh local test custodian first; this service never creates identities"
         );
     }
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(dir.join("dictionary.lock"))?;
-    fs4::FileExt::try_lock_exclusive(&lock)
-        .map_err(|_| anyhow!("Dictionary service busy; retry later"))?;
-    let mut journal = crate::exploit::journal(owner, &dir)?;
-    let pending: Vec<_> = journal
-        .iter()
-        .filter(|e| {
-            action(e) == "dictionary.intent"
-                && !journal.iter().any(|o| {
-                    action(o) == "dictionary.outcome" && data(o)["intent_hash"] == e["hash"]
-                })
-        })
-        .cloned()
-        .collect();
-    for intent in pending {
-        let request: Request = serde_json::from_value(data(&intent)["request"].clone())?;
-        let digest = hash(&serde_json::to_value(&request.command)?)?;
-        if data(&intent)["command_digest"] != digest {
-            bail!("Pending intent command digest mismatch");
-        }
-        let receipt = match data(&intent)["canonical"].as_bool() {
-            Some(true) => recover_canonical_pending(&journal, &intent, &request)?,
-            Some(false) => {
-                let index=journal.iter().position(|e|action(e)=="dictionary.outcome" && data(e)["canonical"]==true && data(e)["op_id"]==request.op_id.0).ok_or_else(||anyhow!("Interrupted retry has no completed original receipt; refusing to infer effects"))?;
-                // Authenticate and replay the completed original before copying a receipt.
-                crate::dictionary_read::replay_verified(&journal[..=index])?;
-                let original = &journal[index];
-                if data(original)["command_digest"] != digest {
-                    rejected("Operation ID is already bound to a different command")
-                } else {
-                    serde_json::from_value(data(original)["receipt"].clone())?
-                }
-            }
-            None => bail!("Pending intent is missing its canonical flag"),
-        };
-        journal.push(finish(owner, &dir, &intent, &receipt)?);
-    }
-    journal = crate::exploit::journal(owner, &dir)?;
+    let _lock = lock_dictionary(&dir)?;
+    recover_all(owner, &dir)?;
+    let journal = crate::exploit::journal(owner, &dir)?;
     let entries = crate::dictionary_read::writer_entries(root, owner, &journal)?;
     let req = Request {
         op_id,
@@ -308,6 +375,62 @@ fn transact(
         json!({"op_id":req.op_id,"retry":!canonical,"receipt":receipt,"intent_hash":intent["hash"],"outcome":outcome,"scope":"offline experimental local custodian"}),
     )
 }
+fn lock_dictionary(dir: &Path) -> Result<std::fs::File> {
+    let lock = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(dir.join("dictionary.lock"))?;
+    fs4::FileExt::try_lock_exclusive(&lock)
+        .map_err(|_| anyhow!("Dictionary service busy; retry later"))?;
+    Ok(lock)
+}
+/// Close every intent that lacks an outcome (caller holds dictionary.lock).
+fn recover_all(owner: &str, dir: &Path) -> Result<()> {
+    let dir = dir.to_path_buf();
+    let mut journal = crate::exploit::journal(owner, &dir)?;
+    let pending: Vec<_> = journal
+        .iter()
+        .filter(|e| {
+            action(e) == "dictionary.intent"
+                && !journal.iter().any(|o| {
+                    action(o) == "dictionary.outcome" && data(o)["intent_hash"] == e["hash"]
+                })
+        })
+        .cloned()
+        .collect();
+    for intent in pending {
+        let request: Request = serde_json::from_value(data(&intent)["request"].clone())?;
+        let digest = hash(&serde_json::to_value(&request.command)?)?;
+        if data(&intent)["command_digest"] != digest {
+            bail!("Pending intent command digest mismatch");
+        }
+        let receipt = match data(&intent)["canonical"].as_bool() {
+            Some(true) => recover_canonical_pending(&journal, &intent, &request)?,
+            Some(false) => {
+                let index=journal.iter().position(|e|action(e)=="dictionary.outcome" && data(e)["canonical"]==true && data(e)["op_id"]==request.op_id.0).ok_or_else(||anyhow!("Interrupted retry has no completed original receipt; refusing to infer effects"))?;
+                // Authenticate and replay the completed original before copying a receipt.
+                crate::dictionary_read::replay_verified(&journal[..=index])?;
+                let original = &journal[index];
+                if data(original)["command_digest"] != digest {
+                    rejected("Operation ID is already bound to a different command")
+                } else {
+                    serde_json::from_value(data(original)["receipt"].clone())?
+                }
+            }
+            None => bail!("Pending intent is missing its canonical flag"),
+        };
+        journal.push(finish(owner, &dir, &intent, &receipt)?);
+    }
+    Ok(())
+}
+/// Recover interrupted dictionary operations without starting a new one.
+pub fn recover(root: &Path, owner: &str) -> Result<()> {
+    let dir = custodian_ready(root, owner)?;
+    let _lock = lock_dictionary(&dir)?;
+    recover_all(owner, &dir)
+}
 /// Models prepare the same typed request but never call the signer through MCP.
 pub fn proposal(value: Value) -> Result<Value> {
     let request: Request = serde_json::from_value(value)?;
@@ -329,6 +452,9 @@ fn recover_canonical_pending(
         ),
         entry: None,
     };
+    if let Some(native_action) = request.command.annotation_action() {
+        return recover_annotation_pending(journal, intent, request, native_action, interrupted);
+    }
     let Command::Mint { root } = &request.command else {
         return Ok(interrupted);
     };
@@ -375,6 +501,59 @@ fn recover_canonical_pending(
     })
 }
 
+/// Meaning/delegate/revoke crash window: the native effect for THIS op_id is durable directly
+/// after the intent and nothing else follows. Only then is the outcome completed as Accepted;
+/// any other shape stays Interrupted (no effect) or refuses automatic repair.
+fn recover_annotation_pending(
+    journal: &[Value],
+    intent: &Value,
+    request: &Request,
+    native_action: &str,
+    interrupted: Receipt,
+) -> Result<Receipt> {
+    let root = request.command.target().expect("annotation has a target");
+    let intent_seq = intent["seq"].as_u64().unwrap_or(0);
+    let Some(native) = journal.iter().find(|e| {
+        action(e) == native_action
+            && e["seq"].as_u64().unwrap_or(0) > intent_seq
+            && data(e)["root"] == root.0
+            && data(e)["op_id"] == request.op_id.0
+    }) else {
+        return Ok(interrupted);
+    };
+    let native_seq = native["seq"].as_u64().unwrap_or(0);
+    if native_seq != intent_seq + 1
+        || journal
+            .iter()
+            .any(|e| e["seq"].as_u64().unwrap_or(0) > native_seq)
+    {
+        bail!("Dictionary recovery blocked: unrelated signed events surround the native effect; refuse automatic repair");
+    }
+    let Some(entry) = journal.iter().rev().find_map(|e| {
+        if action(e) != "dictionary.outcome" || data(e)["receipt"]["status"] != "accepted" {
+            return None;
+        }
+        let entry: Entry = serde_json::from_value(data(e)["receipt"]["entry"].clone()).ok()?;
+        (entry.root == *root && entry.state == State::Minted).then_some(entry)
+    }) else {
+        return Ok(interrupted);
+    };
+    let c = Crystal::parse(&serde_json::to_string(&entry.crystal)?)?;
+    let block = journal
+        .iter()
+        .find(|m| action(m) == "word.mint" && data(m)["root"] == root.0 && data(m)["service"] == "dictionary")
+        .and_then(|m| m["seq"].as_u64())
+        .unwrap_or(0);
+    if annotation_payload(&request.command, &request.op_id, &c, block).as_ref() != Some(data(native)) {
+        bail!("Dictionary recovery blocked: native effect does not match the signed intent");
+    }
+    Ok(Receipt {
+        status: Status::Accepted,
+        reason: Some(format!("Recovered: native {native_action} for this operation was durable before outcome")),
+        entry: Some(entry),
+    })
+}
+
 /// Attempt-scoped IDs for legacy `ans mint` convenience path only.
 /// Explicit `dictionary … --operation-id` semantics are unchanged: same ID replays the
 /// original receipt. After a rejected/interrupted canonical legacy attempt, the next
@@ -386,6 +565,23 @@ fn next_legacy_operation_id(
     content_root: &str,
 ) -> Result<OperationId> {
     let base = format!("legacy-{stage}-{content_root}");
+    let latest = latest_attempt(journal, &base, |command| match (command, stage) {
+        (Command::Draft { crystal, .. }, "draft") => crystal
+            .get("root")
+            .and_then(|v| v.as_str())
+            .is_some_and(|r| r == content_root),
+        (Command::Validate { root }, "validate") => root.0 == content_root,
+        (Command::Mint { root }, "mint") => root.0 == content_root,
+        _ => false,
+    })?;
+    Ok(attempt_id(&base, latest))
+}
+/// Latest canonical outcome among `base` / `base-retry-*` operations whose command matches.
+fn latest_attempt(
+    journal: &[Value],
+    base: &str,
+    matches: impl Fn(&Command) -> bool,
+) -> Result<Option<(u64, String, String)>> {
     let mut latest: Option<(u64, String, String)> = None;
     for event in journal {
         if action(event) != "dictionary.outcome" || data(event)["canonical"] != true {
@@ -401,16 +597,7 @@ fn next_legacy_operation_id(
             continue;
         };
         let request: Request = serde_json::from_value(data(intent)["request"].clone())?;
-        let matches_stage = match (&request.command, stage) {
-            (Command::Draft { crystal, .. }, "draft") => crystal
-                .get("root")
-                .and_then(|v| v.as_str())
-                .is_some_and(|r| r == content_root),
-            (Command::Validate { root }, "validate") => root.0 == content_root,
-            (Command::Mint { root }, "mint") => root.0 == content_root,
-            _ => false,
-        };
-        if !matches_stage {
+        if !matches(&request.command) {
             continue;
         }
         let status = data(event)["receipt"]["status"]
@@ -422,14 +609,110 @@ fn next_legacy_operation_id(
             latest = Some((seq, status, op));
         }
     }
-    Ok(match latest {
-        None => OperationId(base),
+    Ok(latest)
+}
+fn attempt_id(base: &str, latest: Option<(u64, String, String)>) -> OperationId {
+    match latest {
+        None => OperationId(base.to_owned()),
         Some((_, status, op)) if status == "accepted" => OperationId(op),
         Some((seq, status, _)) if status == "rejected" || status == "interrupted" => {
             OperationId(format!("{base}-retry-{seq}"))
         }
         Some((_, _, op)) => OperationId(op),
-    })
+    }
+}
+fn custodian_ready(root: &Path, owner: &str) -> Result<std::path::PathBuf> {
+    if owner.is_empty() {
+        bail!("Explicit local custodian required (--as)");
+    }
+    let dir = root.join("custodians").join(owner);
+    if !["chain.ndjson", "xmss-demo.seed", "xmss-demo.state"]
+        .iter()
+        .all(|name| dir.join(name).is_file())
+    {
+        bail!("Initialize a fresh local test custodian first; this service never creates identities");
+    }
+    Ok(dir)
+}
+/// Legacy `ans mint-meaning|delegate|revoke` adapter: one typed dictionary operation with a
+/// deterministic, attempt-scoped operation ID. Accepted outcomes are idempotent (no new signature);
+/// rejected/interrupted attempts get `-retry-{seq}` so prerequisites are re-checked.
+/// Grant IDs include the number of completed grant transitions so delegate→revoke→delegate
+/// opens a new operation rather than replaying the first receipt.
+pub fn legacy_annotation(root: &Path, owner: &str, crystal: &Crystal, command: Command) -> Result<Value> {
+    let dir = custodian_ready(root, owner)?;
+    recover(root, owner)?;
+    let lifecycle = crate::dictionary_read::show(root, owner, &crystal.root, None)
+        .ok()
+        .and_then(|item| item.lifecycle);
+    if lifecycle != Some(State::Minted) {
+        bail!(
+            "refused: {} has no minted dictionary lifecycle; run `ans --as {owner} mint {}` first",
+            crystal.id,
+            crystal.id
+        );
+    }
+    let journal = crate::exploit::journal(owner, &dir)?;
+    let short = |v: &str| text_sha3(v)[..16].to_owned();
+    let (stage, base, already) = match &command {
+        Command::Meaning { lang, text, .. } => (
+            "meaning",
+            format!("legacy-meaning-{}-{}", crystal.root, short(&format!("{lang}\0{text}"))),
+            None,
+        ),
+        Command::Delegate { scope, .. } | Command::Revoke { scope, .. } => {
+            let delegate = matches!(command, Command::Delegate { .. });
+            let key = (crystal.root.clone(), scope.clone());
+            let active = active_grants(&journal).contains(&key);
+            let transitions = journal
+                .iter()
+                .filter(|e| {
+                    matches!(action(e), "word.delegate" | "word.revoke")
+                        && data(e)["service"] == "dictionary"
+                        && data(e)["root"] == key.0
+                        && data(e)["scope"] == key.1
+                })
+                .count();
+            let stage = if delegate { "delegate" } else { "revoke" };
+            (
+                stage,
+                format!("legacy-{stage}-{}-{}-g{transitions}", crystal.root, short(scope)),
+                (active == delegate).then_some(if delegate { "already delegated" } else { "not delegated" }),
+            )
+        }
+        _ => bail!("Unsupported legacy annotation"),
+    };
+    let wanted = serde_json::to_value(&command)?;
+    let latest = latest_attempt(&journal, &base, |c| serde_json::to_value(c).ok().as_ref() == Some(&wanted))?;
+    if let Some((_, status, op)) = &latest {
+        if status == "accepted" {
+            return Ok(json!({"ok":true,"already":true,"action":format!("word.{stage}"),"word":crystal.id,"root":crystal.root,"op_id":op,"service":"dictionary","network":"none: local journal only"}));
+        }
+    }
+    if let Some(state) = already {
+        if latest.is_none() {
+            return Ok(json!({"ok":true,"already":true,"state":state,"action":format!("word.{stage}"),"word":crystal.id,"root":crystal.root,"service":"dictionary","signed":false}));
+        }
+    }
+    let op_id = attempt_id(&base, latest);
+    let result = apply(root, owner, Request { op_id: op_id.clone(), command: command.clone() })?;
+    let result = match result["receipt"]["status"].as_str() {
+        // A canonical attempt interrupted earlier was closed by `apply`; open a fresh attempt once.
+        Some("interrupted") => {
+            let journal = crate::exploit::journal(owner, &dir)?;
+            let latest = latest_attempt(&journal, &base, |c| serde_json::to_value(c).ok().as_ref() == Some(&wanted))?;
+            apply(root, owner, Request { op_id: attempt_id(&base, latest), command })?
+        }
+        _ => result,
+    };
+    let result = ensure_accepted(result, stage)?;
+    let journal = crate::exploit::journal(owner, &dir)?;
+    let native = journal
+        .iter()
+        .rev()
+        .find(|e| action(e) == format!("word.{stage}") && data(e)["op_id"] == result["op_id"])
+        .ok_or_else(|| anyhow!("Dictionary {stage} accepted without a native effect"))?;
+    Ok(json!({"ok":true,"action":format!("word.{stage}"),"word":crystal.id,"root":crystal.root,"block":native["seq"],"op_id":result["op_id"],"retry":result["retry"],"service":"dictionary","lifecycle_adapter":"legacy_annotation","network":"none: local journal only","private_key":"never printed"}))
 }
 /// Adopt an existing book/UCD crystal into the typed dictionary lifecycle and mint it.
 /// Used by legacy `ans mint` / `mint-alphabet` so there is one ledger path: draft → validate → mint
@@ -666,7 +949,9 @@ Reuse --operation-id for retries: same command returns its original receipt; a d
 command is rejected. Use show for current state, since a retry returns its old receipt.
 Legacy `ans mint` / `ans mint-alphabet` now adopt existing book crystals through this
 same draft→validate→mint service (deterministic legacy-* operation IDs). They do not
-invent meanings or rights. `mint-meaning`, delegate/revoke/run remain separate.
+invent meanings or rights. `ans mint-meaning|delegate|revoke` are typed dictionary
+operations on minted words; `ans run` requires a minted lifecycle plus an active
+dictionary delegation. skill_run is disabled.
 Advanced typed entry point: ans --as OWNER dictionary apply REQUEST.json.
 Admitted calls return receipts even when rejected: check receipt.status, not just exit 0.
 Receipts include public signatures/keys, never secret signer seed or counter data.
@@ -2187,18 +2472,16 @@ mod tests {
             }),
         )
         .unwrap();
-        let blocked = crate::words::handle(
-            "delegate",
-            &cli_args(&["delegate", "z", "review-only-scope"]),
-            &h.0,
-            "alice",
-        )
-        .unwrap_err()
-        .to_string();
+        // Non-dictionary signed writes cannot interleave with the pending mint.
+        let blocked = crate::exploit::record_local("alice", &dir, "contact.add", json!({"word":"bob.ans"}))
+            .unwrap_err()
+            .to_string();
         assert!(
             blocked.contains("incomplete") || blocked.contains("Dictionary operation"),
             "{blocked}"
         );
+        // Legacy delegate is now a dictionary operation itself; it never writes before recovery.
+        assert!(crate::exploit::record_local("alice", &dir, "word.delegate", json!({"root":r.0,"scope":"review-only-scope"})).is_err());
         assert!(!h
             .journal()
             .iter()
@@ -2582,5 +2865,284 @@ mod tests {
         assert_eq!(p["signed"], false);
         assert_eq!(p["executed"], false);
         assert_eq!(h.journal().len(), before);
+    }
+
+    // ---- Legacy mint-meaning / delegate / revoke through the typed lifecycle ----
+    fn legacy(h: &Home, v: &[&str]) -> Result<Value> {
+        crate::words::handle(v[0], &cli_args(v), &h.0, "alice").map(Option::unwrap)
+    }
+    fn mint_letters(h: &Home, letters: &str) {
+        let book = Book::open(&h.0.join("book")).unwrap();
+        for ch in letters.chars() {
+            let c = Crystal::parse(&crystal(&ch.to_string(), true).to_string()).unwrap();
+            book.add(&c).unwrap();
+            let out = legacy(h, &["mint", &ch.to_string()]).unwrap();
+            assert_eq!(out["minted"][0]["lifecycle"], "minted", "{out}");
+        }
+    }
+    /// Word crystal with a root-bound English identity; optionally an exec leaf (built-in sha3_256).
+    fn word_crystal(id: &str, exec: bool) -> Crystal {
+        let mut leaves = vec![
+            Leaf::new(&[("kind", "identity"), ("lang", "en"), ("value", id), ("schema", ans_dict::WORD_SCHEMA)]),
+            Leaf::new(&[("kind", "sense"), ("lang", "en"), ("sense", "en-1"), ("value", "fixture"), ("source", "fixture")]),
+        ];
+        if exec {
+            let reference = ans_dict::exec::exec_word("hash", "sha3_256", "run", "sha3", "0.10.9", crate::rule::LOCK, "x").unwrap();
+            let e = reference.of_kind("exec").next().unwrap();
+            let sum = e.get("checksum").unwrap().to_owned();
+            leaves.push(Leaf::new(&[("kind","exec"),("function","sha3_256"),("scope","run"),("registry","crates.io"),("package","sha3"),("version","0.10.9"),("checksum",&sum),("source","registry+https://github.com/rust-lang/crates.io-index")]));
+        }
+        Crystal::build(CrystalKind::Word, id, leaves, Default::default()).unwrap()
+    }
+    fn minted_word(h: &Home, id: &str, exec: bool) -> Crystal {
+        mint_letters(h, id);
+        let w = word_crystal(id, exec);
+        Book::open(&h.0.join("book")).unwrap().add(&w).unwrap();
+        let out = legacy(h, &["mint", id]).unwrap();
+        assert_eq!(out["minted"][0]["lifecycle"], "minted", "{out}");
+        w
+    }
+    fn count(h: &Home, act: &str) -> usize {
+        h.journal().iter().filter(|e| action(e) == act).count()
+    }
+    fn dir(h: &Home) -> std::path::PathBuf {
+        h.0.join("custodians/alice")
+    }
+    #[test]
+    fn legacy_meaning_delegate_revoke_accept_idempotently_and_replay() {
+        let h = Home::new();
+        let w = minted_word(&h, "ab", false);
+        let before = h.journal().len();
+        let m = legacy(&h, &["mint-meaning", "ab", "en", "a test word"]).unwrap();
+        assert_eq!(m["service"], "dictionary");
+        assert_eq!(m["lifecycle_adapter"], "legacy_annotation");
+        assert!(m["op_id"].as_str().unwrap().starts_with("legacy-meaning-"));
+        // intent + native + outcome, signed and bound.
+        let j = h.journal();
+        assert_eq!(j.len(), before + 3);
+        assert_eq!(action(&j[before]), "dictionary.intent");
+        assert_eq!(action(&j[before + 1]), "word.meaning");
+        assert_eq!(action(&j[before + 2]), "dictionary.outcome");
+        assert_eq!(data(&j[before + 1])["text_sha3"], text_sha3("a test word"));
+        assert_eq!(data(&j[before + 2])["receipt"]["entry"]["state"], "minted");
+        // Same meaning again: idempotent, no new signature.
+        let again = legacy(&h, &["mint-meaning", "ab", "en", "a test word"]).unwrap();
+        assert_eq!(again["already"], true);
+        assert_eq!(h.journal().len(), before + 3);
+        // Letters and unminted words are refused before any signature.
+        assert!(legacy(&h, &["mint-meaning", "a", "en", "x"]).unwrap_err().to_string().contains("not letters"));
+        let unminted = word_crystal("ba", false);
+        Book::open(&h.0.join("book")).unwrap().add(&unminted).unwrap();
+        assert!(legacy(&h, &["mint-meaning", "ba", "en", "x"]).unwrap_err().to_string().contains("no minted dictionary lifecycle"));
+        assert!(legacy(&h, &["delegate", "ba", "run"]).unwrap_err().to_string().contains("no minted dictionary lifecycle"));
+        assert_eq!(h.journal().len(), before + 3);
+        // delegate → already → revoke → not delegated → delegate again (new generation).
+        let d1 = legacy(&h, &["delegate", "ab", "review"]).unwrap();
+        assert!(d1["op_id"].as_str().unwrap().ends_with("-g0"), "{d1}");
+        let n = h.journal().len();
+        assert_eq!(legacy(&h, &["delegate", "ab", "review"]).unwrap()["already"], true);
+        assert_eq!(h.journal().len(), n);
+        let r1 = legacy(&h, &["revoke", "ab", "review"]).unwrap();
+        assert!(r1["op_id"].as_str().unwrap().ends_with("-g1"), "{r1}");
+        let n = h.journal().len();
+        assert_eq!(legacy(&h, &["revoke", "ab", "review"]).unwrap()["state"], "not delegated");
+        assert_eq!(h.journal().len(), n);
+        let d2 = legacy(&h, &["delegate", "ab", "review"]).unwrap();
+        assert!(d2["op_id"].as_str().unwrap().ends_with("-g2"), "{d2}");
+        assert_eq!(count(&h, "word.delegate"), 2);
+        assert_eq!(count(&h, "word.revoke"), 1);
+        let j = h.journal();
+        assert!(active_grants(&j).contains(&(w.root.clone(), "review".into())));
+        let entries = crate::dictionary_read::replay_verified(&j).unwrap();
+        assert_eq!(entries[&w.root].state, State::Minted);
+        // Public reader and proof export still work; proofs exclude annotations.
+        let item = crate::dictionary_read::show(&h.0, "alice", &w.root, None).unwrap();
+        assert_eq!(item.lifecycle, Some(State::Minted));
+        let key = j[0]["xmss"]["pk"].as_str().unwrap().to_owned();
+        let proof = crate::dictionary_read::export(&h.0, "alice", &w.root, &key).unwrap();
+        assert_eq!(crate::dictionary_read::verify(&proof, &key).unwrap()["word_dependency_path_verified"], true);
+    }
+    #[test]
+    fn annotation_rejections_are_signed_without_effects_and_legacy_retries() {
+        let h = Home::new();
+        mint_letters(&h, "cd");
+        let w = word_crystal("cd", false);
+        Book::open(&h.0.join("book")).unwrap().add(&w).unwrap();
+        let r = ContentRoot(w.root.clone());
+        // Explicit typed requests: invalid scope / revoke without grant / unknown root are rejected.
+        assert_eq!(status(&h.apply("bad-scope", Command::Delegate { root: r.clone(), scope: "BAD SCOPE".into() })), "rejected");
+        // Pre-mint rejection at the exact legacy ID; once minted the legacy path opens -retry-.
+        let base = format!("legacy-delegate-{}-{}-g0", w.root, &text_sha3("run")[..16]);
+        let early = h.apply(&base, Command::Delegate { root: r.clone(), scope: "run".into() });
+        assert_eq!(status(&early), "rejected");
+        assert_eq!(count(&h, "word.delegate"), 0);
+        assert_eq!(legacy(&h, &["mint", "cd"]).unwrap()["minted"][0]["lifecycle"], "minted");
+        assert_eq!(status(&h.apply("no-grant", Command::Revoke { root: r.clone(), scope: "run".into() })), "rejected");
+        assert_eq!(status(&h.apply("letter-meaning", Command::Meaning { root: ContentRoot(Crystal::parse(&crystal("c", true).to_string()).unwrap().root), lang: "en".into(), text: "x".into() })), "rejected");
+        assert_eq!(status(&h.apply("empty", Command::Meaning { root: r.clone(), lang: "en".into(), text: " ".into() })), "rejected");
+        assert_eq!(count(&h, "word.revoke") + count(&h, "word.meaning"), 0);
+        let retried = legacy(&h, &["delegate", "cd", "run"]).unwrap();
+        assert!(retried["op_id"].as_str().unwrap().starts_with(&format!("{base}-retry-")), "{retried}");
+        assert_eq!(count(&h, "word.delegate"), 1);
+        // Explicit same-ID retry replays the original rejection (receipt stability).
+        let replayed = h.apply(&base, Command::Delegate { root: r.clone(), scope: "run".into() });
+        assert_eq!(replayed["retry"], true);
+        assert_eq!(status(&replayed), "rejected");
+        assert_eq!(count(&h, "word.delegate"), 1);
+        assert!(crate::dictionary_read::replay_verified(&h.journal()).is_ok());
+    }
+    #[test]
+    fn annotation_interrupts_recover_without_duplicate_effects() {
+        let h = Home::new();
+        let w = minted_word(&h, "ef", false);
+        let r = ContentRoot(w.root.clone());
+        let open_intent = |id: &str, command: Command| {
+            let req = Request { op_id: OperationId(id.into()), command };
+            let digest = hash(&serde_json::to_value(&req.command).unwrap()).unwrap();
+            append("alice", &dir(&h), "dictionary.intent", json!({"request":req,"command_digest":digest,"canonical":true})).unwrap()
+        };
+        // (a) crash after intent, before native: Interrupted, legacy retry opens a new attempt.
+        let scope_hash = &text_sha3("run")[..16];
+        let base = format!("legacy-delegate-{}-{scope_hash}-g0", w.root);
+        open_intent(&base, Command::Delegate { root: r.clone(), scope: "run".into() });
+        // Pending gate: unrelated signed writes refuse; bare native effects refuse.
+        assert!(crate::exploit::record_local("alice", &dir(&h), "contact.add", json!({"word":"bob.ans"})).is_err());
+        assert!(crate::exploit::record_local("alice", &dir(&h), "word.delegate", json!({"root":w.root,"scope":"run","service":"dictionary","op_id":"other"})).is_err());
+        let out = legacy(&h, &["delegate", "ef", "run"]).unwrap();
+        assert!(out["op_id"].as_str().unwrap().starts_with(&format!("{base}-retry-")), "{out}");
+        let j = h.journal();
+        let interrupted = j.iter().find(|e| action(e) == "dictionary.outcome" && data(e)["op_id"] == base).unwrap();
+        assert_eq!(data(interrupted)["receipt"]["status"], "interrupted");
+        assert_eq!(count(&h, "word.delegate"), 1);
+        // (b) crash after durable native, before outcome: recovered as Accepted, never repeated.
+        let mbase = format!("legacy-meaning-{}-{}", w.root, &text_sha3("en\0durable")[..16]);
+        let intent = open_intent(&mbase, Command::Meaning { root: r.clone(), lang: "en".into(), text: "durable".into() });
+        let block = h.journal().iter().find(|e| action(e) == "word.mint" && data(e)["root"] == w.root).unwrap()["seq"].as_u64().unwrap();
+        let cmd = Command::Meaning { root: r.clone(), lang: "en".into(), text: "durable".into() };
+        append("alice", &dir(&h), "word.meaning", annotation_payload(&cmd, &OperationId(mbase.clone()), &w, block).unwrap()).unwrap();
+        assert!(crate::dictionary_read::replay_verified(&h.journal()).is_err());
+        let again = legacy(&h, &["mint-meaning", "ef", "en", "durable"]).unwrap();
+        assert_eq!(again["already"], true, "{again}");
+        assert_eq!(count(&h, "word.meaning"), 1);
+        let j = h.journal();
+        let outcome = j.iter().find(|e| action(e) == "dictionary.outcome" && data(e)["intent_hash"] == intent["hash"]).unwrap();
+        assert_eq!(data(outcome)["receipt"]["status"], "accepted");
+        assert!(data(outcome)["receipt"]["reason"].as_str().unwrap().contains("Recovered"));
+        // (c) crash after native delegate: grant becomes active exactly once.
+        let rbase = format!("legacy-revoke-{}-{scope_hash}-g1", w.root);
+        let rcmd = Command::Revoke { root: r.clone(), scope: "run".into() };
+        open_intent(&rbase, rcmd.clone());
+        append("alice", &dir(&h), "word.revoke", annotation_payload(&rcmd, &OperationId(rbase.clone()), &w, block).unwrap()).unwrap();
+        assert_eq!(legacy(&h, &["revoke", "ef", "run"]).unwrap()["state"], "not delegated");
+        assert_eq!(count(&h, "word.revoke"), 1);
+        let j = h.journal();
+        assert!(!active_grants(&j).contains(&(w.root.clone(), "run".into())));
+        assert!(crate::dictionary_read::replay_verified(&j).is_ok());
+    }
+    #[test]
+    fn annotation_replay_rejects_forged_or_unbound_effects() {
+        // Each case writes genuinely signed events that the signer accepts inside an open intent;
+        // strict replay must still refuse the history.
+        let h = Home::new();
+        let w = minted_word(&h, "gh", false);
+        let r = ContentRoot(w.root.clone());
+        let block = h.journal().iter().find(|e| action(e) == "word.mint" && data(e)["root"] == w.root).unwrap()["seq"].as_u64().unwrap();
+        let entry: Entry = crate::dictionary_read::replay_verified(&h.journal()).unwrap()[&w.root].clone();
+        let forge = |id: &str, cmd: Command, native: Option<Value>, status: &str| {
+            let req = Request { op_id: OperationId(id.into()), command: cmd.clone() };
+            let digest = hash(&serde_json::to_value(&req.command).unwrap()).unwrap();
+            let intent = append("alice", &dir(&h), "dictionary.intent", json!({"request":req,"command_digest":digest,"canonical":true})).unwrap();
+            if let Some(n) = native {
+                append("alice", &dir(&h), cmd.annotation_action().unwrap(), n).unwrap();
+            }
+            let receipt = if status == "accepted" { json!({"status":"accepted","reason":null,"entry":entry}) } else { json!({"status":status,"reason":"x","entry":null}) };
+            append("alice", &dir(&h), "dictionary.outcome", json!({"intent_hash":intent["hash"],"op_id":id,"command_digest":digest,"canonical":true,"receipt":receipt})).unwrap();
+        };
+        // Case 1: payload scope differs from the signed intent.
+        let cmd = Command::Delegate { root: r.clone(), scope: "run".into() };
+        let mut bad = annotation_payload(&cmd, &OperationId("f1".into()), &w, block).unwrap();
+        bad["scope"] = json!("admin");
+        forge("f1", cmd, Some(bad), "accepted");
+        let err = crate::dictionary_read::replay_verified(&h.journal()).unwrap_err().to_string();
+        assert!(err.contains("payload mismatch"), "{err}");
+        // A writer refuses to admit anything on top of a history that fails replay.
+        assert!(apply(&h.0, "alice", Request { op_id: OperationId("after".into()), command: Command::Inspect { root: r.clone() } }).is_err());
+
+        let h = Home::new();
+        let w = minted_word(&h, "gh", false);
+        let r = ContentRoot(w.root.clone());
+        let block = h.journal().iter().find(|e| action(e) == "word.mint" && data(e)["root"] == w.root).unwrap()["seq"].as_u64().unwrap();
+        let entry: Entry = crate::dictionary_read::replay_verified(&h.journal()).unwrap()[&w.root].clone();
+        let forge = |id: &str, cmd: Command, native: Option<Value>, status: &str| {
+            let req = Request { op_id: OperationId(id.into()), command: cmd.clone() };
+            let digest = hash(&serde_json::to_value(&req.command).unwrap()).unwrap();
+            let intent = append("alice", &dir(&h), "dictionary.intent", json!({"request":req,"command_digest":digest,"canonical":true})).unwrap();
+            if let Some(n) = native {
+                append("alice", &dir(&h), cmd.annotation_action().unwrap(), n).unwrap();
+            }
+            let receipt = if status == "accepted" { json!({"status":"accepted","reason":null,"entry":entry}) } else { json!({"status":status,"reason":"x","entry":null}) };
+            append("alice", &dir(&h), "dictionary.outcome", json!({"intent_hash":intent["hash"],"op_id":id,"command_digest":digest,"canonical":true,"receipt":receipt})).unwrap();
+        };
+        // Case 2: native effect written but the outcome says rejected (unbound effect).
+        let cmd = Command::Delegate { root: r.clone(), scope: "run".into() };
+        let native = annotation_payload(&cmd, &OperationId("f2".into()), &w, block).unwrap();
+        forge("f2", cmd, Some(native), "rejected");
+        let err = crate::dictionary_read::replay_verified(&h.journal()).unwrap_err().to_string();
+        assert!(err.contains("without an accepted outcome"), "{err}");
+
+        let h = Home::new();
+        let w = minted_word(&h, "gh", false);
+        let r = ContentRoot(w.root.clone());
+        let block = h.journal().iter().find(|e| action(e) == "word.mint" && data(e)["root"] == w.root).unwrap()["seq"].as_u64().unwrap();
+        let entry: Entry = crate::dictionary_read::replay_verified(&h.journal()).unwrap()[&w.root].clone();
+        // Case 3: accepted revoke with no prior grant.
+        let cmd = Command::Revoke { root: r.clone(), scope: "run".into() };
+        let native = annotation_payload(&cmd, &OperationId("f3".into()), &w, block).unwrap();
+        let req = Request { op_id: OperationId("f3".into()), command: cmd.clone() };
+        let digest = hash(&serde_json::to_value(&req.command).unwrap()).unwrap();
+        let intent = append("alice", &dir(&h), "dictionary.intent", json!({"request":req,"command_digest":digest,"canonical":true})).unwrap();
+        append("alice", &dir(&h), "word.revoke", native).unwrap();
+        append("alice", &dir(&h), "dictionary.outcome", json!({"intent_hash":intent["hash"],"op_id":"f3","command_digest":digest,"canonical":true,"receipt":{"status":"accepted","reason":null,"entry":entry}})).unwrap();
+        let err = crate::dictionary_read::replay_verified(&h.journal()).unwrap_err().to_string();
+        assert!(err.contains("Revoke without active delegation"), "{err}");
+
+        // Case 4: byte tamper of a signed meaning event breaks the journal itself.
+        let h = Home::new();
+        minted_word(&h, "gh", false);
+        legacy(&h, &["mint-meaning", "gh", "en", "honest"]).unwrap();
+        let path = dir(&h).join("chain.ndjson");
+        let text = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, text.replace("\"text\":\"honest\"", "\"text\":\"forged\"")).unwrap();
+        assert!(crate::exploit::journal("alice", &dir(&h)).is_err());
+    }
+    #[test]
+    fn run_and_skill_run_fail_closed_unless_dictionary_rules_pass() {
+        let h = Home::new();
+        let w = minted_word(&h, "has", true);
+        // Minted executable word without a dictionary delegation: refused.
+        let e = legacy(&h, &["run", "has", "abc"]).unwrap_err().to_string();
+        assert!(e.contains("no active dictionary delegation"), "{e}");
+        // A bare legacy grant cannot be signed at all.
+        assert!(crate::exploit::record_local("alice", &dir(&h), "word.delegate", json!({"word":"has","root":w.root,"scope":"run"})).is_err());
+        legacy(&h, &["delegate", "has", "run"]).unwrap();
+        let plan = legacy(&h, &["run", "has", "--plan"]).unwrap();
+        assert_eq!(plan["accept"], true, "{plan}");
+        assert_eq!(plan["service"], "dictionary");
+        let out = legacy(&h, &["run", "has", "abc"]).unwrap();
+        assert_eq!(out["output"], "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532");
+        legacy(&h, &["revoke", "has", "run"]).unwrap();
+        assert!(legacy(&h, &["run", "has", "abc"]).unwrap_err().to_string().contains("no active dictionary delegation"));
+        // Word in the book but without a dictionary lifecycle: refused even with no journal tricks.
+        let loose = word_crystal("sah", true);
+        Book::open(&h.0.join("book")).unwrap().add(&loose).unwrap();
+        assert!(legacy(&h, &["run", "sah"]).unwrap_err().to_string().contains("no minted dictionary lifecycle"));
+        // MCP `run` goes through the same handler.
+        let mcp = crate::words::mcp_call("run", &json!({"word":"has","input":"abc"}), &h.0, "alice").unwrap();
+        assert!(mcp.is_err());
+        let n = h.journal().len();
+        let skill = crate::exploit::api_for_test("alice", &dir(&h), &json!({"op":"skill_run","name":"reference","action":"read"}));
+        assert!(skill.unwrap_err().to_string().contains("skill_run is disabled"));
+        assert_eq!(h.journal().len(), n);
+        assert!(crate::dictionary_read::replay_verified(&h.journal()).is_ok());
     }
 }

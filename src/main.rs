@@ -789,7 +789,7 @@ fn mcp(actor: &str, root: &std::path::Path) -> Result<()> {
             }
             "ping" => Ok(json!({})),
             "tools/list" => Ok(
-                json!({"tools":[{"name":"exploit_state","description":"Read own local custodian state","inputSchema":{"type":"object","properties":{}}},{"name":"skill_list","description":"List own grants","inputSchema":{"type":"object","properties":{}}},{"name":"skill_run","description":"Run a consented demo plugin action; may debit demo leaves","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"action":{"type":"string"}},"required":["name","action"]}}]}),
+                json!({"tools":[{"name":"exploit_state","description":"Read own local custodian state","inputSchema":{"type":"object","properties":{}}},{"name":"skill_list","description":"List own grants","inputSchema":{"type":"object","properties":{}}}]}),
             ).map(|mut v| { v["tools"].as_array_mut().unwrap().extend(words::mcp_tools()); v }
             ),
             "tools/call" => {

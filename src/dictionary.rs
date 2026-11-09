@@ -375,8 +375,17 @@ fn recover_canonical_pending(
     })
 }
 
-fn next_legacy_mint_operation_id(journal: &[Value], content_root: &str) -> Result<OperationId> {
-    let base = format!("legacy-mint-{content_root}");
+/// Attempt-scoped IDs for legacy `ans mint` convenience path only.
+/// Explicit `dictionary … --operation-id` semantics are unchanged: same ID replays the
+/// original receipt. After a rejected/interrupted canonical legacy attempt, the next
+/// convenience call opens `legacy-{stage}-{root}-retry-{seq}` so prerequisites can be
+/// revalidated without duplicating accepted effects.
+fn next_legacy_operation_id(
+    journal: &[Value],
+    stage: &str,
+    content_root: &str,
+) -> Result<OperationId> {
+    let base = format!("legacy-{stage}-{content_root}");
     let mut latest: Option<(u64, String, String)> = None;
     for event in journal {
         if action(event) != "dictionary.outcome" || data(event)["canonical"] != true {
@@ -392,10 +401,16 @@ fn next_legacy_mint_operation_id(journal: &[Value], content_root: &str) -> Resul
             continue;
         };
         let request: Request = serde_json::from_value(data(intent)["request"].clone())?;
-        let Command::Mint { root } = &request.command else {
-            continue;
+        let matches_stage = match (&request.command, stage) {
+            (Command::Draft { crystal, .. }, "draft") => crystal
+                .get("root")
+                .and_then(|v| v.as_str())
+                .is_some_and(|r| r == content_root),
+            (Command::Validate { root }, "validate") => root.0 == content_root,
+            (Command::Mint { root }, "mint") => root.0 == content_root,
+            _ => false,
         };
-        if root.0 != content_root {
+        if !matches_stage {
             continue;
         }
         let status = data(event)["receipt"]["status"]
@@ -437,11 +452,9 @@ pub fn adopt_book_crystal(root: &Path, owner: &str, crystal: &Crystal) -> Result
     let content = ContentRoot(crystal.root.clone());
     let word = word_id_from_crystal(crystal)?;
     let crystal_value: Value = serde_json::from_str(&crystal.to_json())?;
-    // Draft/validate keep stable IDs. Mint uses attempt-scoped IDs after a rejected/interrupted
-    // legacy attempt so prerequisites can be revalidated; explicit dictionary --operation-id is unchanged.
-    let draft_id = OperationId(format!("legacy-draft-{}", crystal.root));
-    let validate_id = OperationId(format!("legacy-validate-{}", crystal.root));
-    for _ in 0..8 {
+    // All legacy stages use attempt-scoped IDs after rejected/interrupted outcomes.
+    // Explicit dictionary --operation-id receipt semantics stay unchanged.
+    for _ in 0..12 {
         let lifecycle = match crate::dictionary_read::show(root, owner, &crystal.root, None) {
             Ok(item) => item.lifecycle,
             Err(_) => None,
@@ -480,11 +493,13 @@ pub fn adopt_book_crystal(root: &Path, owner: &str, crystal: &Crystal) -> Result
                     "next": "Native word.mint exists without dictionary lifecycle; automatic promotion is refused"
                 }));
             }
+            let journal = crate::exploit::journal(owner, &dir)?;
+            let draft_id = next_legacy_operation_id(&journal, "draft", &crystal.root)?;
             let drafted = apply(
                 root,
                 owner,
                 Request {
-                    op_id: draft_id.clone(),
+                    op_id: draft_id,
                     command: Command::Draft {
                         word: word.clone(),
                         crystal: crystal_value.clone(),
@@ -492,7 +507,7 @@ pub fn adopt_book_crystal(root: &Path, owner: &str, crystal: &Crystal) -> Result
                 },
             )?;
             match drafted["receipt"]["status"].as_str() {
-                Some("accepted") => continue,
+                Some("accepted") | Some("interrupted") => continue,
                 Some("rejected") => {
                     let reason = drafted["receipt"]["reason"].as_str().unwrap_or("");
                     if reason.contains("already has a lifecycle")
@@ -507,18 +522,20 @@ pub fn adopt_book_crystal(root: &Path, owner: &str, crystal: &Crystal) -> Result
             }
         }
         if lifecycle == Some(State::Draft) {
+            let journal = crate::exploit::journal(owner, &dir)?;
+            let validate_id = next_legacy_operation_id(&journal, "validate", &crystal.root)?;
             let validated = apply(
                 root,
                 owner,
                 Request {
-                    op_id: validate_id.clone(),
+                    op_id: validate_id,
                     command: Command::Validate {
                         root: content.clone(),
                     },
                 },
             )?;
             match validated["receipt"]["status"].as_str() {
-                Some("accepted") => continue,
+                Some("accepted") | Some("interrupted") => continue,
                 Some("rejected") => {
                     let reason = validated["receipt"]["reason"].as_str().unwrap_or("");
                     if reason.contains("Validation requires draft")
@@ -533,7 +550,7 @@ pub fn adopt_book_crystal(root: &Path, owner: &str, crystal: &Crystal) -> Result
         }
         if lifecycle == Some(State::Validated) {
             let journal = crate::exploit::journal(owner, &dir)?;
-            let mint_id = next_legacy_mint_operation_id(&journal, &crystal.root)?;
+            let mint_id = next_legacy_operation_id(&journal, "mint", &crystal.root)?;
             let minted = apply(
                 root,
                 owner,
@@ -569,6 +586,7 @@ pub fn adopt_book_crystal(root: &Path, owner: &str, crystal: &Crystal) -> Result
                         "private_key": "never printed"
                     }));
                 }
+                Some("interrupted") => continue,
                 Some("rejected") => {
                     let reason = minted["receipt"]["reason"].as_str().unwrap_or("");
                     if reason.contains("Mint requires validated")
@@ -2214,6 +2232,135 @@ mod tests {
         assert_eq!(action(&journal[mint_idx - 1]), "dictionary.intent");
         assert_eq!(action(&journal[mint_idx + 1]), "dictionary.outcome");
         assert!(crate::dictionary_read::replay_verified(&journal).is_ok());
+    }
+    #[test]
+    fn legacy_draft_retries_after_interrupted_attempt() {
+        // Interrupted legacy-draft-ROOT must not stick forever; convenience mint opens a new attempt.
+        let h = Home::new();
+        let c = crystal("p", true);
+        let r = root(&c);
+        let parsed = Crystal::parse(&c.to_string()).unwrap();
+        Book::open(&h.0.join("book")).unwrap().add(&parsed).unwrap();
+        let dir = h.0.join("custodians/alice");
+        let req = Request {
+            op_id: OperationId(format!("legacy-draft-{}", r.0)),
+            command: draft(c.clone()),
+        };
+        let digest = hash(&serde_json::to_value(&req.command).unwrap()).unwrap();
+        append(
+            "alice",
+            &dir,
+            "dictionary.intent",
+            json!({"request":req,"command_digest":digest,"canonical":true}),
+        )
+        .unwrap();
+        let wrap = crate::words::handle(
+            "mint",
+            &cli_args(&["mint", "p"]),
+            &h.0,
+            "alice",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(wrap["minted"][0]["lifecycle"], "minted", "{wrap}");
+        let journal = h.journal();
+        assert!(journal.iter().any(|e| {
+            action(e) == "dictionary.outcome"
+                && data(e)["op_id"] == format!("legacy-draft-{}", r.0)
+                && data(e)["receipt"]["status"] == "interrupted"
+        }));
+        assert!(journal.iter().any(|e| {
+            action(e) == "dictionary.outcome"
+                && data(e)["receipt"]["status"] == "accepted"
+                && data(e)["op_id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with(&format!("legacy-draft-{}-retry-", r.0))
+        }));
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|e| action(e) == "word.mint")
+                .count(),
+            1
+        );
+        assert!(crate::dictionary_read::replay_verified(&journal).is_ok());
+    }
+    #[test]
+    fn legacy_validate_retries_after_interrupted_attempt() {
+        // Interrupted legacy-validate-ROOT must open attempt-scoped retry, then mint once.
+        let h = Home::new();
+        let c = crystal("q", true);
+        let r = root(&c);
+        let parsed = Crystal::parse(&c.to_string()).unwrap();
+        Book::open(&h.0.join("book")).unwrap().add(&parsed).unwrap();
+        assert_eq!(
+            status(&h.apply(
+                &format!("legacy-draft-{}", r.0),
+                draft(c.clone())
+            )),
+            "accepted"
+        );
+        let dir = h.0.join("custodians/alice");
+        let req = Request {
+            op_id: OperationId(format!("legacy-validate-{}", r.0)),
+            command: Command::Validate { root: r.clone() },
+        };
+        let digest = hash(&serde_json::to_value(&req.command).unwrap()).unwrap();
+        append(
+            "alice",
+            &dir,
+            "dictionary.intent",
+            json!({"request":req,"command_digest":digest,"canonical":true}),
+        )
+        .unwrap();
+        let wrap = crate::words::handle(
+            "mint",
+            &cli_args(&["mint", "q"]),
+            &h.0,
+            "alice",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(wrap["minted"][0]["lifecycle"], "minted", "{wrap}");
+        let journal = h.journal();
+        assert!(journal.iter().any(|e| {
+            action(e) == "dictionary.outcome"
+                && data(e)["op_id"] == format!("legacy-validate-{}", r.0)
+                && data(e)["receipt"]["status"] == "interrupted"
+        }));
+        assert!(journal.iter().any(|e| {
+            action(e) == "dictionary.outcome"
+                && data(e)["receipt"]["status"] == "accepted"
+                && data(e)["op_id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with(&format!("legacy-validate-{}-retry-", r.0))
+        }));
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|e| action(e) == "word.mint")
+                .count(),
+            1
+        );
+        let again = crate::words::handle(
+            "mint",
+            &cli_args(&["mint", "q"]),
+            &h.0,
+            "alice",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(again["minted"][0]["already"], true);
+        assert_eq!(
+            h.journal()
+                .iter()
+                .filter(|e| action(e) == "word.mint")
+                .count(),
+            1
+        );
+        assert!(crate::dictionary_read::replay_verified(&h.journal()).is_ok());
     }
     #[test]
     fn online_exploit_record_refused_while_dictionary_mint_pending() {

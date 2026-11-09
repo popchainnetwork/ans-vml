@@ -122,7 +122,8 @@ journal. Supply one reviewed exported public proof and its independently expecte
 signer key:
 
 ```sh
-"$ANS" dictionary serve rdzen.proof.json --expect-key "$EXPECTED_PK" --port 37121
+"$ANS" dictionary serve oak.proof.json --expect-key "$EXPECTED_PK" --port 37121 \
+  --package ans-vml-experimental-linux-x86_64-COMMIT.tar.gz   # --package is optional
 # Open http://127.0.0.1:37121/ in a browser on the same machine.
 # Stop with Ctrl-C. Startup prints the exact process PID and loopback URL.
 ```
@@ -130,33 +131,48 @@ signer key:
 The default port is 37121. Binding is hard-coded to `127.0.0.1`; there is no public
 bind flag. A missing, invalid or wrong-signer proof aborts startup, with no fallback
 sample data. Verification uses the shared Rust reader/protocol engine. Startup
-loads a single immutable public snapshot into memory. Editing the file later does
-not change the running snapshot; stop, review and restart explicitly.
+loads a single immutable public snapshot (and the optional package file) into
+memory. Editing the files later does not change the running server; stop, review
+and restart explicitly.
 
-The English black/gold phone-responsive explorer shows the actual selected word
-and character entries, minted state, language, content roots, ordered dependencies,
-native block/event references, signed outcome sequences, and the pinned signer.
-Expandable technical details include source leaves. Search and character links
-inspect real entries; no mint, run, microphone, payment or invented live activity
-controls are present. This mode accepts verified minted proofs only: imported and
+The page is an English, mobile-first product page (360 px phones up to desktop,
+dark and light colour schemes, 44 px+ touch targets, no horizontal scrolling). It
+shows the actual selected word and character entries, minted state, language,
+content roots, the ordered dependency closure, native block/event references,
+signed outcome sequences and the pinned signer. Search and character links inspect
+real entries. No draft, mint, run, signing, microphone, payment or invented live
+activity controls are present. Only verified minted proofs are loaded: imported and
 draft entries are not loaded or mislabeled as minted. Selected proof source and
 timestamp metadata remain public in downloads; review them before sharing.
 
-Only these GET routes exist: `/`, `/app.css`, `/app.js`, `/favicon.svg`,
-`/api/entries`, `/api/entry/CONTENT_ROOT`, `/api/verification`, `/proof.json`.
-The proof download is normalized public proof JSON, not a directory/file-serving
-endpoint. Other paths return 404; traversal, malformed/oversized requests, request
-bodies, non-loopback Host/foreign Origin and non-GET methods are refused. In
-particular, POST `/api/exploit` is unavailable. Request headers are limited to
-8192 bytes, sockets have bounded timeouts, and responses close the connection.
-CSP, nosniff, no-referrer, same-origin resource policy and frame denial are set.
-Assets are embedded locally; there are no CDN scripts, analytics or external
-fonts. Dictionary strings use DOM text nodes, never HTML interpolation.
+GET routes: `/`, `/app.css`, `/app.js`, `/favicon.svg`, `/manifest.webmanifest`,
+`/api/entries`, `/api/entry/CONTENT_ROOT`, `/api/verification`, `/proof.json`,
+`/api/package` and, only when `--package` was given, `/download/package.tar.gz`.
+The one non-GET route is `POST /api/verify`: a pure, stateless check of a pasted or
+uploaded proof against a submitted expected key (`{"expected_key": HEX, "proof":
+PROOF}`, `application/json`, at most 8 MiB). It runs the same `dictionary verify`
+code, stores nothing and opens no signer; the answer is `{"valid": true, "result":
+...}` or `{"valid": false, "reason": ...}`.
+
+`--package` must be a plainly named `.tar.gz`. Its SHA-256 is computed at startup
+and, if a `NAME.tar.gz.sha256` sidecar exists, must match it or startup aborts. The
+page shows the name, size and SHA-256 with copyable quick-start commands. The proof
+download is normalized public proof JSON; neither download is a directory or
+file-serving endpoint. Other paths return 404. Traversal, malformed/oversized
+requests, unexpected request bodies, non-loopback Host, foreign Origin, non-JSON
+POST bodies and other methods are refused; in particular POST `/api/exploit` is
+unavailable. Request headers are limited to 8192 bytes, sockets have bounded
+timeouts, and responses close the connection. CSP, nosniff, no-referrer,
+same-origin resource policy and frame denial are set. Assets are embedded locally;
+there are no CDN scripts, analytics or external fonts. Dictionary strings use DOM
+text nodes, never HTML interpolation.
 
 The HTTP tests exercise real verified character and pinned-word proofs, list and
-entry results, proof download, security headers, POST/unknown/traversal/oversized
-request refusal and unchanged public input bytes. These are protocol/source tests,
-not a claim that a browser layout or phone screenshot has been visually checked.
+entry results, proof download, `/api/verify` with the right key, a wrong key, a
+tampered proof, non-proof JSON and bad requests, package hashing/sidecar checks,
+security headers, refused methods/paths and unchanged public input bytes. Browser
+layout was checked separately with headless Chrome at 360, 390 and 1280 px; that
+is a local rendering check, not a test on physical phones.
 Do not expose the older mutation-capable web runtime as this visitor service.
 
 ## MCP

@@ -642,7 +642,7 @@ Read-only (no signer or identity creation):
   ans [--as OWNER] dictionary show WORD_OR_ROOT
   ans --as OWNER dictionary export WORD_OR_ROOT --expect-key HEX
   ans dictionary verify PROOF_FILE --expect-key HEX
-  ans dictionary serve PROOF_FILE --expect-key HEX [--port N]
+  ans dictionary serve PROOF_FILE --expect-key HEX [--port N] [--package FILE.tar.gz]
 
 Owner commands SIGN journal intent/outcome events (existing disposable --as required):
   ans --as OWNER dictionary write character CHAR (--unverified | --license L --source S [--attribution A]) [--operation-id ID]

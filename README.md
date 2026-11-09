@@ -347,7 +347,7 @@ done
 
 The first four receipts are accepted; `run` is rejected. This service intentionally has **no executable-permission approval adapter** yet: even a minted entry cannot execute through it. Legacy `ans run`/delegation remain separate older interfaces and are NOT claimed to enforce this new lifecycle. For word minting, every referenced character must already have a native mint in the same local journal. Golden word roots and fixtures remain unchanged.
 
-Same ID + same command replays the original receipt while recording a new attempt; same ID + a different command is rejected. A new ID does not authorize repeating a mint. If a canonical first intent lacks a durable outcome on restart, it is closed as `interrupted`, not resumed. An unfinished same-command retry instead receives the completed original receipt (Accepted, Rejected or Interrupted); an unfinished conflicting retry is Rejected. Recovery validates the original completed prefix and never repeats native effects. Already-signed incompatible historical recovery outcomes are not rewritten or automatically repaired; strict replay still refuses them. If a native mint reached the journal before a crash, the service refuses automatic reconciliation or another mint: manual test-state review is required.
+Same ID + same command replays the original receipt while recording a new attempt; same ID + a different command is rejected. A new ID does not authorize repeating a mint. If a canonical first intent lacks a durable outcome on restart, it is closed as `interrupted`, not resumed. An unfinished same-command retry instead receives the completed original receipt (Accepted, Rejected or Interrupted); an unfinished conflicting retry is Rejected. Recovery validates the original completed prefix and never repeats native effects. Already-signed incompatible historical recovery outcomes are not rewritten or automatically repaired; strict replay still refuses them. If a native `word.mint` for the same operation ID is already durable and still contiguous with its intent, recovery completes that mint as accepted without a second native effect. Unrelated signed events must not be admitted while a dictionary intent is pending; interleaved histories fail closed rather than inventing adjacency.
 
 ### Signer locks and crash boundaries (experimental)
 
@@ -366,7 +366,8 @@ recovery records `interrupted` and does not invent success; (2) after a synced
 that operation as accepted without a second native mint. These are process
 SIGKILL/exit boundaries after `sync_data`/`sync_kernel`, **not** a claim of
 power-loss atomicity across journal and kernel, copied-backup rollback safety,
-or production audit certification. Test-only crashes require an
+or production audit certification. Legacy mutating CLI paths refuse to sign while a
+dictionary intent is pending so intent→native→outcome adjacency is preserved. Test-only crashes require an
 `allow-test-crash` sentinel in the disposable custodian directory.
  No claim of atomicity between journal and kernel, backup rollback resistance or external exactly-once effects is made.
 

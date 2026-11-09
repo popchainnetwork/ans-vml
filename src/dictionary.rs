@@ -342,6 +342,16 @@ fn recover_canonical_pending(
     }) else {
         return Ok(interrupted);
     };
+    let native_seq = native["seq"].as_u64().unwrap_or(0);
+    // Strict adjacency: do not append an Accepted outcome after unrelated events.
+    if journal
+        .iter()
+        .any(|e| e["seq"].as_u64().unwrap_or(0) > native_seq)
+    {
+        bail!(
+            "Dictionary mint recovery blocked: unrelated signed events follow the native mint before its outcome; refuse automatic repair"
+        );
+    }
     let Some(prior) = journal.iter().rev().find_map(|e| {
         if action(e) != "dictionary.outcome" || data(e)["receipt"]["status"] != "accepted" {
             return None;
@@ -356,13 +366,54 @@ fn recover_canonical_pending(
     }
     let mut entry = prior;
     entry.state = State::Minted;
-    let _ = native; // matched above
     Ok(Receipt {
         status: Status::Accepted,
         reason: Some(
             "Recovered: native word.mint for this operation was durable before outcome".into(),
         ),
         entry: Some(entry),
+    })
+}
+
+fn next_legacy_mint_operation_id(journal: &[Value], content_root: &str) -> Result<OperationId> {
+    let base = format!("legacy-mint-{content_root}");
+    let mut latest: Option<(u64, String, String)> = None;
+    for event in journal {
+        if action(event) != "dictionary.outcome" || data(event)["canonical"] != true {
+            continue;
+        }
+        let op = match data(event)["op_id"].as_str() {
+            Some(op) if op == base || op.starts_with(&format!("{base}-retry-")) => op.to_owned(),
+            _ => continue,
+        };
+        let Some(intent) = journal.iter().find(|i| {
+            action(i) == "dictionary.intent" && i["hash"] == data(event)["intent_hash"]
+        }) else {
+            continue;
+        };
+        let request: Request = serde_json::from_value(data(intent)["request"].clone())?;
+        let Command::Mint { root } = &request.command else {
+            continue;
+        };
+        if root.0 != content_root {
+            continue;
+        }
+        let status = data(event)["receipt"]["status"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned();
+        let seq = event["seq"].as_u64().unwrap_or(0);
+        if latest.as_ref().map(|(s, _, _)| seq >= *s).unwrap_or(true) {
+            latest = Some((seq, status, op));
+        }
+    }
+    Ok(match latest {
+        None => OperationId(base),
+        Some((_, status, op)) if status == "accepted" => OperationId(op),
+        Some((seq, status, _)) if status == "rejected" || status == "interrupted" => {
+            OperationId(format!("{base}-retry-{seq}"))
+        }
+        Some((_, _, op)) => OperationId(op),
     })
 }
 /// Adopt an existing book/UCD crystal into the typed dictionary lifecycle and mint it.
@@ -386,10 +437,10 @@ pub fn adopt_book_crystal(root: &Path, owner: &str, crystal: &Crystal) -> Result
     let content = ContentRoot(crystal.root.clone());
     let word = word_id_from_crystal(crystal)?;
     let crystal_value: Value = serde_json::from_str(&crystal.to_json())?;
-    // Deterministic IDs identify retries of the SAME typed command; each apply still revalidates.
+    // Draft/validate keep stable IDs. Mint uses attempt-scoped IDs after a rejected/interrupted
+    // legacy attempt so prerequisites can be revalidated; explicit dictionary --operation-id is unchanged.
     let draft_id = OperationId(format!("legacy-draft-{}", crystal.root));
     let validate_id = OperationId(format!("legacy-validate-{}", crystal.root));
-    let mint_id = OperationId(format!("legacy-mint-{}", crystal.root));
     for _ in 0..8 {
         let lifecycle = match crate::dictionary_read::show(root, owner, &crystal.root, None) {
             Ok(item) => item.lifecycle,
@@ -481,6 +532,8 @@ pub fn adopt_book_crystal(root: &Path, owner: &str, crystal: &Crystal) -> Result
             }
         }
         if lifecycle == Some(State::Validated) {
+            let journal = crate::exploit::journal(owner, &dir)?;
+            let mint_id = next_legacy_mint_operation_id(&journal, &crystal.root)?;
             let minted = apply(
                 root,
                 owner,
@@ -2075,6 +2128,196 @@ mod tests {
         assert!(err.contains("busy"), "{err}");
         drop(lock);
     }
+    #[test]
+    fn mixed_legacy_writer_refused_while_dictionary_mint_pending() {
+        // Crash window: durable intent+native mint, no outcome yet. Legacy delegate must not
+        // interleave; recovery then completes contiguous outcome without a second native mint.
+        let h = Home::new();
+        let c = crystal("z", true);
+        let r = root(&c);
+        assert_eq!(status(&h.apply("d", draft(c.clone()))), "accepted");
+        assert_eq!(
+            status(&h.apply("v", Command::Validate { root: r.clone() })),
+            "accepted"
+        );
+        let dir = h.0.join("custodians/alice");
+        let req = Request {
+            op_id: OperationId("native-gap".into()),
+            command: Command::Mint { root: r.clone() },
+        };
+        let digest = hash(&serde_json::to_value(&req.command).unwrap()).unwrap();
+        append(
+            "alice",
+            &dir,
+            "dictionary.intent",
+            json!({"request":req,"command_digest":digest,"canonical":true}),
+        )
+        .unwrap();
+        append(
+            "alice",
+            &dir,
+            "word.mint",
+            json!({
+                "word":"z",
+                "root":r.0,
+                "file":"u007a.crystal.json",
+                "layer":1,
+                "letters":[],
+                "op_id":"native-gap",
+                "service":"dictionary",
+                "chain":"local test journal; not mainnet"
+            }),
+        )
+        .unwrap();
+        let blocked = crate::words::handle(
+            "delegate",
+            &cli_args(&["delegate", "z", "review-only-scope"]),
+            &h.0,
+            "alice",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            blocked.contains("incomplete") || blocked.contains("Dictionary operation"),
+            "{blocked}"
+        );
+        assert!(!h
+            .journal()
+            .iter()
+            .any(|e| action(e) == "word.delegate"));
+        let recovered = h.apply("native-gap", Command::Mint { root: r.clone() });
+        assert_eq!(status(&recovered), "accepted");
+        assert_eq!(recovered["receipt"]["entry"]["state"], "minted");
+        assert_eq!(
+            h.journal()
+                .iter()
+                .filter(|e| action(e) == "word.mint")
+                .count(),
+            1
+        );
+        let shown = crate::dictionary_read::show(&h.0, "alice", &r.0, None).unwrap();
+        assert_eq!(shown.lifecycle, Some(State::Minted));
+        let delegated = crate::words::handle(
+            "delegate",
+            &cli_args(&["delegate", "z", "review-only-scope"]),
+            &h.0,
+            "alice",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(delegated["ok"], true);
+        let journal = h.journal();
+        let mint_idx = journal
+            .iter()
+            .position(|e| action(e) == "word.mint" && data(e)["op_id"] == "native-gap")
+            .unwrap();
+        assert_eq!(action(&journal[mint_idx - 1]), "dictionary.intent");
+        assert_eq!(action(&journal[mint_idx + 1]), "dictionary.outcome");
+        assert!(crate::dictionary_read::replay_verified(&journal).is_ok());
+    }
+    #[test]
+    fn legacy_mint_gets_new_attempt_after_dependency_rejection() {
+        // Deterministic legacy-mint-ROOT must stay idempotent for exact retries, but after a
+        // rejected attempt the convenience CLI must open a new attempt once dependencies exist.
+        let h = Home::new();
+        let book = Book::open(&h.0.join("book")).unwrap();
+        let leaves = vec![
+            ans_dict::Leaf::new(&[
+                ("kind", "identity"),
+                ("lang", "en"),
+                ("value", "xy"),
+                ("schema", ans_dict::WORD_SCHEMA),
+            ]),
+            ans_dict::Leaf::new(&[
+                ("kind", "sense"),
+                ("lang", "en"),
+                ("sense", "en-1"),
+                ("value", "fixture gloss"),
+                ("source", "fixture"),
+            ]),
+        ];
+        let word = Crystal::build(CrystalKind::Word, "xy", leaves, Default::default()).unwrap();
+        book.add(&word).unwrap();
+        let early = crate::words::handle(
+            "mint",
+            &cli_args(&["mint", "xy"]),
+            &h.0,
+            "alice",
+        )
+        .unwrap()
+        .unwrap();
+        let refused = early["minted"][0]["refused"].as_str().unwrap_or("");
+        assert!(refused.contains("not minted"), "{early}");
+        let journal = h.journal();
+        let rejected_ops = journal
+            .iter()
+            .filter(|e| {
+                action(e) == "dictionary.outcome"
+                    && data(e)["canonical"] == true
+                    && data(e)["receipt"]["status"] == "rejected"
+                    && data(e)["op_id"]
+                        .as_str()
+                        .unwrap_or("")
+                        .starts_with(&format!("legacy-mint-{}", word.root))
+            })
+            .count();
+        assert_eq!(rejected_ops, 1, "expected one canonical rejected mint attempt");
+        for ch in ["x", "y"] {
+            let letter = crystal(ch, true);
+            let c = Crystal::parse(&letter.to_string()).unwrap();
+            book.add(&c).unwrap();
+            let minted = crate::words::handle(
+                "mint",
+                &cli_args(&["mint", ch]),
+                &h.0,
+                "alice",
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(minted["minted"][0]["lifecycle"], "minted", "{minted}");
+        }
+        let again = crate::words::handle(
+            "mint",
+            &cli_args(&["mint", "xy"]),
+            &h.0,
+            "alice",
+        )
+        .unwrap()
+        .unwrap();
+        let item = &again["minted"][0];
+        assert_eq!(item["lifecycle"], "minted", "{again}");
+        let op = item["op_id"].as_str().unwrap();
+        assert!(
+            op.starts_with(&format!("legacy-mint-{}-retry-", word.root)),
+            "expected attempt-scoped op_id after rejection, got {op}"
+        );
+        assert_eq!(
+            h.journal()
+                .iter()
+                .filter(|e| action(e) == "word.mint" && data(e)["root"] == word.root)
+                .count(),
+            1
+        );
+        let shown = crate::dictionary_read::show(&h.0, "alice", &word.root, None).unwrap();
+        assert_eq!(shown.lifecycle, Some(State::Minted));
+        let third = crate::words::handle(
+            "mint",
+            &cli_args(&["mint", "xy"]),
+            &h.0,
+            "alice",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(third["minted"][0]["already"], true);
+        assert_eq!(
+            h.journal()
+                .iter()
+                .filter(|e| action(e) == "word.mint" && data(e)["root"] == word.root)
+                .count(),
+            1
+        );
+    }
+    #[test]
     fn signer_lock_fails_closed_and_mcp_only_prepares_request() {
         let h = Home::new();
         let dir = h.0.join("custodians/alice");

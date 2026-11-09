@@ -14,7 +14,7 @@ const HTML: &str = include_str!("../assets/dictionary-visitor.html");
 const CSS: &str = include_str!("../assets/dictionary-visitor.css");
 const JS: &str = include_str!("../assets/dictionary-visitor.js");
 const ICON: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges"><rect width="16" height="16" fill="#03020a"/><rect x="4" y="2" width="8" height="1" fill="#00f0ff"/><rect x="3" y="3" width="1" height="1" fill="#00f0ff"/><rect x="4" y="3" width="2" height="1" fill="#cffaff"/><rect x="6" y="3" width="4" height="1" fill="#00f0ff"/><rect x="10" y="3" width="2" height="1" fill="#ff3df0"/><rect x="12" y="3" width="1" height="1" fill="#00f0ff"/><rect x="2" y="4" width="1" height="1" fill="#00f0ff"/><rect x="3" y="4" width="2" height="1" fill="#cffaff"/><rect x="5" y="4" width="5" height="1" fill="#00f0ff"/><rect x="10" y="4" width="3" height="1" fill="#ff3df0"/><rect x="13" y="4" width="1" height="1" fill="#00f0ff"/><rect x="1" y="5" width="1" height="1" fill="#00f0ff"/><rect x="2" y="5" width="1" height="1" fill="#cffaff"/><rect x="3" y="5" width="7" height="1" fill="#00f0ff"/><rect x="10" y="5" width="3" height="1" fill="#ff3df0"/><rect x="13" y="5" width="1" height="1" fill="#9a5cff"/><rect x="14" y="5" width="1" height="1" fill="#00f0ff"/><rect x="0" y="6" width="16" height="1" fill="#00f0ff"/><rect x="1" y="7" width="1" height="1" fill="#0b6a7a"/><rect x="2" y="7" width="6" height="1" fill="#00f0ff"/><rect x="8" y="7" width="4" height="1" fill="#ff3df0"/><rect x="12" y="7" width="2" height="1" fill="#9a5cff"/><rect x="14" y="7" width="1" height="1" fill="#0b6a7a"/><rect x="2" y="8" width="1" height="1" fill="#0b6a7a"/><rect x="3" y="8" width="5" height="1" fill="#00f0ff"/><rect x="8" y="8" width="3" height="1" fill="#ff3df0"/><rect x="11" y="8" width="2" height="1" fill="#9a5cff"/><rect x="13" y="8" width="1" height="1" fill="#0b6a7a"/><rect x="3" y="9" width="1" height="1" fill="#0b6a7a"/><rect x="4" y="9" width="4" height="1" fill="#00f0ff"/><rect x="8" y="9" width="2" height="1" fill="#ff3df0"/><rect x="10" y="9" width="2" height="1" fill="#9a5cff"/><rect x="12" y="9" width="1" height="1" fill="#0b6a7a"/><rect x="4" y="10" width="1" height="1" fill="#0b6a7a"/><rect x="5" y="10" width="3" height="1" fill="#00f0ff"/><rect x="8" y="10" width="1" height="1" fill="#ff3df0"/><rect x="9" y="10" width="2" height="1" fill="#9a5cff"/><rect x="11" y="10" width="1" height="1" fill="#0b6a7a"/><rect x="5" y="11" width="1" height="1" fill="#0b6a7a"/><rect x="6" y="11" width="2" height="1" fill="#00f0ff"/><rect x="8" y="11" width="1" height="1" fill="#ff3df0"/><rect x="9" y="11" width="1" height="1" fill="#9a5cff"/><rect x="10" y="11" width="1" height="1" fill="#0b6a7a"/><rect x="6" y="12" width="1" height="1" fill="#0b6a7a"/><rect x="7" y="12" width="1" height="1" fill="#00f0ff"/><rect x="8" y="12" width="1" height="1" fill="#9a5cff"/><rect x="9" y="12" width="1" height="1" fill="#0b6a7a"/><rect x="7" y="13" width="2" height="1" fill="#0b6a7a"/></svg>"##;
-const MANIFEST: &str = r##"{"name":"Genesis dictionary (local experimental)","short_name":"Genesis","start_url":"/","scope":"/","display":"standalone","background_color":"#03020a","theme_color":"#03020a","icons":[{"src":"/favicon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}"##;
+const MANIFEST: &str = r##"{"name":"Genesis dictionary (experimental)","short_name":"Genesis","start_url":"./","scope":"./","display":"standalone","background_color":"#03020a","theme_color":"#03020a","icons":[{"src":"favicon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]}"##;
 const MAX_HEADERS: usize = 8192;
 /// Upper bound for a pasted/uploaded proof submitted to the pure verifier.
 pub(crate) const MAX_BODY: usize = 8 * 1024 * 1024;
@@ -173,7 +173,7 @@ impl Visitor {
             "/api/package" => {
                 let v = match &self.package {
                     Some(p) => {
-                        json!({"available":true,"name":p.name,"size":p.bytes.len(),"sha256":p.sha256,"sidecar_matched":p.sidecar_matched,"platform":"linux-x86_64","download":"/download/package.tar.gz"})
+                        json!({"available":true,"name":p.name,"size":p.bytes.len(),"sha256":p.sha256,"sidecar_matched":p.sidecar_matched,"platform":"linux-x86_64","download":"download/package.tar.gz"})
                     }
                     None => json!({"available":false}),
                 };
@@ -748,8 +748,19 @@ pub(crate) mod tests {
             assert!(!HTML.contains(claim) && !JS.contains(claim), "{claim}");
         }
         assert!(HTML.contains("Experimental") && HTML.contains("not audited"));
-        assert!(HTML.contains("/manifest.webmanifest"));
-        assert!(MANIFEST.contains("\"start_url\":\"/\""));
+        assert!(HTML.contains("href=\"manifest.webmanifest\""));
+        assert!(MANIFEST.contains("\"start_url\":\"./\"") && MANIFEST.contains("\"scope\":\"./\""));
+    }
+    /// The page must work unchanged behind a reverse-proxy prefix such as `/genesis/`,
+    /// so every same-site URL in the HTML, JS, manifest and API is document-relative.
+    #[test]
+    fn visitor_urls_are_prefix_relative() {
+        for (name, text) in [("html", HTML), ("js", JS), ("manifest", MANIFEST)] {
+            for bad in ["href=\"/", "src=\"/", "'/api", "'/proof", "\"/api", "\"src\":\"/", "\"start_url\":\"/\""] {
+                assert!(!text.contains(bad), "{name} contains absolute URL {bad}");
+            }
+        }
+
         assert!(CSP.contains("form-action 'none'") && CSP.contains("frame-ancestors 'none'"));
     }
     #[test]
@@ -782,6 +793,7 @@ pub(crate) mod tests {
         assert_eq!(meta["sha256"], sha);
         assert_eq!(meta["size"], 25);
         assert_eq!(meta["available"], true);
+        assert_eq!(meta["download"], "download/package.tar.gz");
         std::fs::remove_dir_all(&dir).unwrap();
     }
     #[test]

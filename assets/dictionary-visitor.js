@@ -77,7 +77,7 @@ async function select(root, focus) {
   const version = ++requestVersion; selected = root; renderList();
   const panel = $('entry'); panel.setAttribute('aria-busy', 'true');
   try {
-    const data = await api('/api/entry/' + root); if (version !== requestVersion) return;
+    const data = await api('api/entry/' + root); if (version !== requestVersion) return;
     panel.replaceChildren();
     const top = el('div', undefined, 'entry-top');
     top.append(el('span', kindLabel(data), 'pill'), el('span', 'Verified · ' + data.state, 'pill good'));
@@ -150,7 +150,7 @@ async function verify() {
   try { JSON.parse(text); } catch (_) { return showResult(false, 'Not valid JSON', ['The proof text could not be parsed as JSON.']); }
   const btn = $('verify-btn'); btn.disabled = true; btn.textContent = 'Checking signatures…';
   try {
-    const r = await fetch('/api/verify', {method: 'POST', cache: 'no-store', credentials: 'omit', headers: {'Content-Type': 'application/json'}, body: '{"expected_key":' + JSON.stringify(key) + ',"proof":' + text + '}'});
+    const r = await fetch('api/verify', {method: 'POST', cache: 'no-store', credentials: 'omit', headers: {'Content-Type': 'application/json'}, body: '{"expected_key":' + JSON.stringify(key) + ',"proof":' + text + '}'});
     const data = await r.json().catch(() => ({}));
     if (!r.ok) return showResult(false, 'Request refused', [data.error || ('HTTP ' + r.status)]);
     if (data.valid) {
@@ -164,7 +164,7 @@ async function verify() {
       showResult(false, 'Not valid', [data.reason || 'The proof did not verify.', 'A wrong key, an edited byte, or a missing dependency makes the check fail.']);
     }
   } catch (error) {
-    showResult(false, 'Could not reach the local server', [error.message || 'Network error']);
+    showResult(false, 'Could not reach the verifier server', [error.message || 'Network error']);
   } finally { btn.disabled = false; btn.textContent = 'Verify proof'; }
 }
 
@@ -176,8 +176,8 @@ async function copyFrom(id) {
 
 async function loadPackage() {
   try {
-    const p = await api('/api/package');
-    if (!p.available) { $('pkg-note').textContent = 'This local server was started without the package file, so there is no download here. The name and checksum above are for the b859a2f build.'; return; }
+    const p = await api('api/package');
+    if (!p.available) { $('pkg-note').textContent = 'This server was started without the package file, so there is no download here. The name and checksum above are for the b859a2f build.'; return; }
     const dir = p.name.replace(/\.tar\.gz$/, '');
     $('pkg-name').textContent = p.name; $('pkg-size').textContent = kb(p.size); $('pkg-sha').textContent = p.sha256;
     const a = $('pkg-download'); a.setAttribute('download', p.name); a.hidden = false;
@@ -199,7 +199,7 @@ $('proof-file').addEventListener('change', async ev => {
 });
 $('use-served').addEventListener('click', async () => {
   try {
-    if (!servedProof) { const r = await fetch('/proof.json', {cache: 'no-store', credentials: 'omit'}); if (!r.ok) throw new Error('HTTP ' + r.status); servedProof = await r.text(); }
+    if (!servedProof) { const r = await fetch('proof.json', {cache: 'no-store', credentials: 'omit'}); if (!r.ok) throw new Error('HTTP ' + r.status); servedProof = await r.text(); }
     setProofSource({label: 'Served proof', text: servedProof});
   } catch (error) { showResult(false, 'Could not load the served proof', [error.message]); }
 });
@@ -213,7 +213,7 @@ $('use-wrong-key').addEventListener('click', () => {
 (async () => {
   loadPackage();
   try {
-    const [data, v] = await Promise.all([api('/api/entries'), api('/api/verification')]);
+    const [data, v] = await Promise.all([api('api/entries'), api('api/verification')]);
     entries = data.entries.sort((a, b) => (a.kind === 'word' ? 0 : 1) - (b.kind === 'word' ? 0 : 1) || a.id.localeCompare(b.id));
     pinnedKey = v.expected_signer || '';
     const id = v.identity && v.identity.spelling || '';
@@ -221,7 +221,7 @@ $('use-wrong-key').addEventListener('click', () => {
     $('status-title').textContent = 'Served proof verified' + (id ? ': ' + id : '');
     $('status-detail').textContent = entries.length + ' minted entries · pinned key ' + pinnedKey.slice(0, 12) + '… · last signed event #' + v.at_sequence;
     bootLog(['> genesis visitor :: read-only', '> public proof loaded ........ ok', '> pinned key ' + pinnedKey.slice(0, 8) + '… ...... ok', '> signatures + payloads ...... ok', '> ' + entries.length + ' minted entries ......... ok', '> ready. no signer opened.']);
-    try { renderGlance(await api('/api/entry/' + data.target_root)); } catch (_) { /* optional summary */ }
+    try { renderGlance(await api('api/entry/' + data.target_root)); } catch (_) { /* optional summary */ }
     await select(data.target_root, false);
   } catch (error) {
     fail(error); $('status').classList.add('bad');

@@ -8,16 +8,16 @@
 <meta name="theme-color" content="#03020a">
 <meta name="description" content="Genesis is an experimental native minted dictionary in Rust. Browse signed entries, check a proof against an expected key, and download the Linux package.">
 <title>Genesis · the native minted dictionary (experimental)</title>
-<link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/favicon.svg">
-<link rel="manifest" href="/manifest.webmanifest">
-<link rel="stylesheet" href="/app.css">
-<script src="/app.js" defer></script>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="favicon.svg">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="app.css">
+<script src="app.js" defer></script>
 </head>
 <body>
 <canvas id="px" class="px" aria-hidden="true"></canvas>
 <a class="skip" href="#main">Skip to content</a>
-<p class="notice" role="note"><strong>Experimental</strong> · not audited · not for production use · local read-only demo</p>
+<p class="notice" role="note"><strong>Experimental</strong> · not audited · not for production use · read-only demo</p>
 <header class="top">
   <div class="wrap top-row">
     <a class="brand" href="#top" aria-label="Genesis, back to top"><svg class="brand-mark" viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true" focusable="false"><rect x="4" y="2" width="8" height="1" fill="#00f0ff"/><rect x="3" y="3" width="1" height="1" fill="#00f0ff"/><rect x="4" y="3" width="2" height="1" fill="#cffaff"/><rect x="6" y="3" width="4" height="1" fill="#00f0ff"/><rect x="10" y="3" width="2" height="1" fill="#ff3df0"/><rect x="12" y="3" width="1" height="1" fill="#00f0ff"/><rect x="2" y="4" width="1" height="1" fill="#00f0ff"/><rect x="3" y="4" width="2" height="1" fill="#cffaff"/><rect x="5" y="4" width="5" height="1" fill="#00f0ff"/><rect x="10" y="4" width="3" height="1" fill="#ff3df0"/><rect x="13" y="4" width="1" height="1" fill="#00f0ff"/><rect x="1" y="5" width="1" height="1" fill="#00f0ff"/><rect x="2" y="5" width="1" height="1" fill="#cffaff"/><rect x="3" y="5" width="7" height="1" fill="#00f0ff"/><rect x="10" y="5" width="3" height="1" fill="#ff3df0"/><rect x="13" y="5" width="1" height="1" fill="#9a5cff"/><rect x="14" y="5" width="1" height="1" fill="#00f0ff"/><rect x="0" y="6" width="16" height="1" fill="#00f0ff"/><rect x="1" y="7" width="1" height="1" fill="#0b6a7a"/><rect x="2" y="7" width="6" height="1" fill="#00f0ff"/><rect x="8" y="7" width="4" height="1" fill="#ff3df0"/><rect x="12" y="7" width="2" height="1" fill="#9a5cff"/><rect x="14" y="7" width="1" height="1" fill="#0b6a7a"/><rect x="2" y="8" width="1" height="1" fill="#0b6a7a"/><rect x="3" y="8" width="5" height="1" fill="#00f0ff"/><rect x="8" y="8" width="3" height="1" fill="#ff3df0"/><rect x="11" y="8" width="2" height="1" fill="#9a5cff"/><rect x="13" y="8" width="1" height="1" fill="#0b6a7a"/><rect x="3" y="9" width="1" height="1" fill="#0b6a7a"/><rect x="4" y="9" width="4" height="1" fill="#00f0ff"/><rect x="8" y="9" width="2" height="1" fill="#ff3df0"/><rect x="10" y="9" width="2" height="1" fill="#9a5cff"/><rect x="12" y="9" width="1" height="1" fill="#0b6a7a"/><rect x="4" y="10" width="1" height="1" fill="#0b6a7a"/><rect x="5" y="10" width="3" height="1" fill="#00f0ff"/><rect x="8" y="10" width="1" height="1" fill="#ff3df0"/><rect x="9" y="10" width="2" height="1" fill="#9a5cff"/><rect x="11" y="10" width="1" height="1" fill="#0b6a7a"/><rect x="5" y="11" width="1" height="1" fill="#0b6a7a"/><rect x="6" y="11" width="2" height="1" fill="#00f0ff"/><rect x="8" y="11" width="1" height="1" fill="#ff3df0"/><rect x="9" y="11" width="1" height="1" fill="#9a5cff"/><rect x="10" y="11" width="1" height="1" fill="#0b6a7a"/><rect x="6" y="12" width="1" height="1" fill="#0b6a7a"/><rect x="7" y="12" width="1" height="1" fill="#00f0ff"/><rect x="8" y="12" width="1" height="1" fill="#9a5cff"/><rect x="9" y="12" width="1" height="1" fill="#0b6a7a"/><rect x="7" y="13" width="2" height="1" fill="#0b6a7a"/></svg><span class="brand-text">Genesis<small>native dictionary</small></span></a>
@@ -131,7 +131,7 @@
         <div class="span"><dt>SHA-256</dt><dd><code id="pkg-sha" class="break">79bac7a3e770f6b12a9af217e619a9001a5714cfb14f0fe6e77d4b7963a7d3e5</code></dd></div>
       </dl>
       <div class="row">
-        <a id="pkg-download" class="btn primary" href="/download/package.tar.gz" hidden>Download .tar.gz</a>
+        <a id="pkg-download" class="btn primary" href="download/package.tar.gz" hidden>Download .tar.gz</a>
         <button class="btn" type="button" data-copy="pkg-sha">Copy SHA-256</button>
       </div>
       <p id="pkg-note" class="muted small">Checking whether this server offers the file…</p>
@@ -177,7 +177,7 @@ cd ans-vml-experimental-linux-x86_64-b859a2f</code></pre><button class="btn copy
   </section>
 </main>
 <footer class="foot">
-  <div class="wrap foot-row"><span>Genesis / ANS VML</span><span>Apache-2.0 core · Rust</span><span>Local experimental demo · read-only</span></div>
+  <div class="wrap foot-row"><span>Genesis / ANS VML</span><span>Apache-2.0 core · Rust</span><span>Experimental demo · read-only</span></div>
 </footer>
 <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 </body>

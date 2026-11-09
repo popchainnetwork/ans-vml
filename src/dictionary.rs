@@ -313,6 +313,156 @@ pub fn proposal(value: Value) -> Result<Value> {
         json!({"request":request,"executed":false,"signed":false,"next":"Custodian reviews and invokes ans dictionary apply REQUEST.json with explicit --as"}),
     )
 }
+/// Adopt an existing book/UCD crystal into the typed dictionary lifecycle and mint it.
+/// Used by legacy `ans mint` / `mint-alphabet` so there is one ledger path: draft → validate → mint
+/// with dictionary.intent/outcome and the same native word.mint event shape the strict reader expects.
+/// Does not invent meanings, licenses or provenance; crystal bytes must already be complete.
+/// Bare legacy `word.mint` without lifecycle is reported, never auto-promoted.
+pub fn adopt_book_crystal(root: &Path, owner: &str, crystal: &Crystal) -> Result<Value> {
+    if owner.is_empty() {
+        bail!("Explicit local custodian required (--as)");
+    }
+    let dir = root.join("custodians").join(owner);
+    if !["chain.ndjson", "xmss-demo.seed", "xmss-demo.state"]
+        .iter()
+        .all(|name| dir.join(name).is_file())
+    {
+        bail!("Initialize a fresh local test custodian first; this service never creates identities");
+    }
+    Book::open(&root.join("book"))?.add(crystal)?;
+    let content = ContentRoot(crystal.root.clone());
+    let lifecycle = match crate::dictionary_read::show(root, owner, &crystal.root, None) {
+        Ok(item) => item.lifecycle,
+        Err(_) => None,
+    };
+    let journal = crate::exploit::journal(owner, &dir)?;
+    let bare = crate::rule::mint_proof(
+        &crystal.root,
+        &journal,
+        &[],
+        &crate::exploit::event_valid,
+    );
+    if lifecycle == Some(State::Minted) {
+        let block = bare.map(|e| e["seq"].clone());
+        return Ok(json!({
+            "already": true,
+            "lifecycle": "minted",
+            "service": "dictionary",
+            "word": crystal.id,
+            "root": crystal.root,
+            "block": block,
+            "layer": if crystal.kind == CrystalKind::Letter { 1 } else { 2 },
+            "network": "none: local journal only",
+            "private_key": "never printed"
+        }));
+    }
+    if lifecycle.is_none() {
+        if let Some(e) = bare {
+            return Ok(json!({
+                "already": true,
+                "legacy_native_only": true,
+                "lifecycle": null,
+                "refused_auto_reconcile": true,
+                "word": crystal.id,
+                "root": crystal.root,
+                "block": e["seq"],
+                "next": "Native word.mint exists without dictionary lifecycle; automatic promotion is refused"
+            }));
+        }
+    }
+    let word = word_id_from_crystal(crystal)?;
+    let crystal_value: Value = serde_json::from_str(&crystal.to_json())?;
+    if lifecycle.is_none() {
+        ensure_accepted(apply(
+            root,
+            owner,
+            Request {
+                op_id: OperationId(format!("legacy-draft-{}", crystal.root)),
+                command: Command::Draft {
+                    word: word.clone(),
+                    crystal: crystal_value,
+                },
+            },
+        )?, "draft")?;
+    }
+    if lifecycle.is_none() || lifecycle == Some(State::Draft) {
+        ensure_accepted(apply(
+            root,
+            owner,
+            Request {
+                op_id: OperationId(format!("legacy-validate-{}", crystal.root)),
+                command: Command::Validate {
+                    root: content.clone(),
+                },
+            },
+        )?, "validate")?;
+    }
+    let minted = ensure_accepted(apply(
+        root,
+        owner,
+        Request {
+            op_id: OperationId(format!("legacy-mint-{}", crystal.root)),
+            command: Command::Mint {
+                root: content,
+            },
+        },
+    )?, "mint")?;
+    let entry = &minted["receipt"]["entry"];
+    let journal = crate::exploit::journal(owner, &dir)?;
+    let native = crate::rule::mint_proof(
+        &crystal.root,
+        &journal,
+        &[],
+        &crate::exploit::event_valid,
+    )
+    .ok_or_else(|| anyhow!("Dictionary mint accepted without a native word.mint event"))?;
+    Ok(json!({
+        "already": false,
+        "lifecycle": "minted",
+        "service": "dictionary",
+        "word": crystal.id,
+        "root": crystal.root,
+        "block": native["seq"],
+        "layer": native["body"]["data"]["layer"],
+        "op_id": minted["op_id"],
+        "retry": minted["retry"],
+        "state": entry["state"],
+        "network": "none: local journal only",
+        "private_key": "never printed"
+    }))
+}
+fn word_id_from_crystal(c: &Crystal) -> Result<WordId> {
+    let identity = c
+        .of_kind("identity")
+        .next()
+        .ok_or_else(|| anyhow!("Crystal requires a root-bound identity"))?;
+    let language = identity
+        .get("lang")
+        .or(identity.get("language"))
+        .or_else(|| (c.kind == CrystalKind::Letter).then_some("und"))
+        .ok_or_else(|| anyhow!("Word crystal needs a root-bound identity language"))?
+        .to_owned();
+    if c.kind == CrystalKind::Letter && (language != "und" || c.id.chars().count() != 1) {
+        bail!("Character identity must be one Unicode scalar with language und");
+    }
+    Ok(WordId {
+        language,
+        spelling: c.id.clone(),
+    })
+}
+fn ensure_accepted(result: Value, step: &str) -> Result<Value> {
+    match result["receipt"]["status"].as_str() {
+        Some("accepted") => Ok(result),
+        Some("rejected") => {
+            let reason = result["receipt"]["reason"]
+                .as_str()
+                .unwrap_or("rejected")
+                .to_owned();
+            bail!("dictionary {step} refused: {reason}")
+        }
+        other => bail!("dictionary {step} returned unexpected status {other:?}"),
+    }
+}
 pub const HELP: &str = "ANS dictionary — local experimental lifecycle
 
 Read-only (no signer or identity creation):
@@ -342,6 +492,9 @@ Inspect signs a receipt; show/list are read-only alternatives.
 IDs omitted on owner commands are generated with OS randomness and printed as op_id.
 Reuse --operation-id for retries: same command returns its original receipt; a different
 command is rejected. Use show for current state, since a retry returns its old receipt.
+Legacy `ans mint` / `ans mint-alphabet` now adopt existing book crystals through this
+same draft→validate→mint service (deterministic legacy-* operation IDs). They do not
+invent meanings or rights. `mint-meaning`, delegate/revoke/run remain separate.
 Advanced typed entry point: ans --as OWNER dictionary apply REQUEST.json.
 Admitted calls return receipts even when rejected: check receipt.status, not just exit 0.
 Receipts include public signatures/keys, never secret signer seed or counter data.
@@ -1545,6 +1698,125 @@ mod tests {
             .filter(|e| action(e) == "word.mint")
             .count();
         assert_eq!(mints, 4);
+    }
+    #[test]
+    fn legacy_mint_cli_adopts_dictionary_lifecycle_without_double_native_mint() {
+        let h = Home::new();
+        let letter = crystal("q", true);
+        let book = Book::open(&h.0.join("book")).unwrap();
+        let c = Crystal::parse(&letter.to_string()).unwrap();
+        book.add(&c).unwrap();
+        let first_wrap = crate::words::handle(
+            "mint",
+            &cli_args(&["mint", "q"]),
+            &h.0,
+            "alice",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(first_wrap["service"], "dictionary");
+        assert_eq!(first_wrap["lifecycle_adapter"], "adopt_book_crystal");
+        let first = &first_wrap["minted"][0];
+        assert_eq!(first["lifecycle"], "minted");
+        assert_eq!(first["already"], false);
+        assert_eq!(first["service"], "dictionary");
+        let root = first["root"].as_str().unwrap().to_owned();
+        let journal = h.journal();
+        assert_eq!(
+            journal
+                .iter()
+                .filter(|e| action(e) == "word.mint")
+                .count(),
+            1
+        );
+        assert!(journal.iter().any(|e| action(e) == "dictionary.intent"));
+        assert!(journal.iter().any(|e| action(e) == "dictionary.outcome"));
+        let again_wrap = crate::words::handle(
+            "mint",
+            &cli_args(&["mint", "q"]),
+            &h.0,
+            "alice",
+        )
+        .unwrap()
+        .unwrap();
+        let again = &again_wrap["minted"][0];
+        assert_eq!(again["already"], true);
+        assert_eq!(again["lifecycle"], "minted");
+        assert_eq!(
+            h.journal()
+                .iter()
+                .filter(|e| action(e) == "word.mint")
+                .count(),
+            1
+        );
+        let shown = crate::dictionary_read::show(&h.0, "alice", &root, None).unwrap();
+        assert_eq!(shown.lifecycle, Some(State::Minted));
+        // Word crystal without minted letter dependencies is rejected.
+        let leaves = vec![
+            ans_dict::Leaf::new(&[
+                ("kind", "identity"),
+                ("lang", "en"),
+                ("value", "xz"),
+                ("schema", ans_dict::WORD_SCHEMA),
+            ]),
+            ans_dict::Leaf::new(&[
+                ("kind", "sense"),
+                ("lang", "en"),
+                ("sense", "en-1"),
+                ("value", "test"),
+                ("source", "fixture"),
+            ]),
+        ];
+        let word = Crystal::build(
+            CrystalKind::Word,
+            "xz",
+            leaves,
+            Default::default(),
+        )
+        .unwrap();
+        book.add(&word).unwrap();
+        let refused = crate::words::handle(
+            "mint",
+            &cli_args(&["mint", "xz"]),
+            &h.0,
+            "alice",
+        )
+        .unwrap()
+        .unwrap();
+        let reason = refused["minted"][0]["refused"].as_str().unwrap_or("");
+        assert!(
+            reason.contains("not minted") || reason.contains("refused"),
+            "{refused}"
+        );
+        assert_eq!(
+            h.journal()
+                .iter()
+                .filter(|e| action(e) == "word.mint")
+                .count(),
+            1
+        );
+        // Bare legacy native mint without lifecycle is not auto-promoted.
+        let orphan = crystal("z", true);
+        let oc = Crystal::parse(&orphan.to_string()).unwrap();
+        book.add(&oc).unwrap();
+        crate::exploit::record_local(
+            "alice",
+            &h.0.join("custodians/alice"),
+            "word.mint",
+            json!({
+                "word": oc.id,
+                "root": oc.root,
+                "file": oc.file_name(),
+                "layer": 1,
+                "letters": [],
+                "chain": "legacy fixture"
+            }),
+        )
+        .unwrap();
+        let legacy_only = crate::dictionary::adopt_book_crystal(&h.0, "alice", &oc).unwrap();
+        assert_eq!(legacy_only["legacy_native_only"], true);
+        assert_eq!(legacy_only["refused_auto_reconcile"], true);
+        assert_eq!(legacy_only["lifecycle"], Value::Null);
     }
     fn signer_lock_fails_closed_and_mcp_only_prepares_request() {
         let h = Home::new();

@@ -265,9 +265,12 @@ for verification; secret seed/counter data is never printed.
 
 `inspect` is an owner operation and signs a receipt. `show`, `list`, `export`,
 `verify` and the isolated `serve` mode remain read-only and never open a signer.
-Mint does not enable execution. The legacy top-level `ans mint`, `mint-alphabet`,
-`delegate`, `run`, and related mutation paths have not been silently redefined or
-migrated; do not use them as substitutes for this lifecycle walkthrough.
+Mint does not enable execution. `ans mint` and `ans mint-alphabet` now **adopt** existing book/UCD crystals through
+the same typed dictionary draft→validate→mint service (deterministic `legacy-*`
+operation IDs, one native mint, dependency checks). They do not invent meanings or
+rights. `mint-meaning`, `delegate`, `revoke`, `run`, MCP `run`/`skill_run`, and
+`/api/exploit` remain separate entry points and are not execution-enabled by this
+migration. Prefer `dictionary write|draft|validate|mint` for new authored content.
 
 ### Fresh disposable bootstrap and the native rdzeń flow
 

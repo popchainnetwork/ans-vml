@@ -385,6 +385,17 @@ The first four receipts are accepted; `run` is rejected. This service intentiona
 
 Same ID + same command replays the original receipt while recording a new attempt; same ID + a different command is rejected. A new ID does not authorize repeating a mint. If a canonical first intent lacks a durable outcome on restart, it is closed as `interrupted`, not resumed. An unfinished same-command retry instead receives the completed original receipt (Accepted, Rejected or Interrupted); an unfinished conflicting retry is Rejected. Recovery validates the original completed prefix and never repeats native effects. Already-signed incompatible historical recovery outcomes are not rewritten or automatically repaired; strict replay still refuses them. If a native `word.mint` for the same operation ID is already durable and still contiguous with its intent, recovery completes that mint as accepted without a second native effect. Unrelated signed events must not be admitted while a dictionary intent is pending; interleaved histories fail closed rather than inventing adjacency.
 
+### Network profiles and mainnet readiness (experimental)
+
+Signed events carry `body.network` (`devnet` by default; old events without the field are
+devnet). Proofs verify only under their own profile: `ans --network rehearsal dictionary
+verify PROOF --expect-key HEX`. Protected profiles (`testnet`, `rehearsal`, `mainnet`) need
+`--network N --confirm-network N --custodian-key /abs/key` on every signing invocation,
+are created only by `ans … network init WORD`, refuse demo keys and the test crash hook, and
+never create identities implicitly. Mainnet signing is disabled in this build. A local
+throwaway rehearsal: `tools/mainnet-rehearsal.sh`. Status and open items:
+[MAINNET-READINESS.md](MAINNET-READINESS.md).
+
 ### Signer locks and crash boundaries (experimental)
 
 Offline dictionary admission takes an exclusive `dictionary.lock`, then each signed

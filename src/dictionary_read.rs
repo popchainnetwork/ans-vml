@@ -180,6 +180,8 @@ fn replay_events(
     if hex::decode(expected)?.len() != 64 {
         bail!("Expected signer must be a 64-byte XMSSMT public key");
     }
+    // One journal, one network profile (signed body field; legacy events are devnet).
+    crate::network::of_journal(events)?;
     let mut entries: BTreeMap<String, Entry> = BTreeMap::new();
     let mut intents: BTreeMap<String, (Request, bool, String, Value)> = BTreeMap::new();
     let mut originals: BTreeMap<String, (String, Option<Receipt>)> = BTreeMap::new();
@@ -765,10 +767,30 @@ pub fn export(root: &Path, owner: &str, query: &str, anchor: &str) -> Result<Pro
         entry,
         attestations: selected,
     };
-    verify(&proof, anchor)?;
+    let network = crate::network::of_journal(
+        &proof.attestations.iter().map(|a| a.event.clone()).collect::<Vec<_>>(),
+    )?;
+    verify_network(&proof, anchor, network)?;
     Ok(proof)
 }
+/// Verify under the operator-selected profile (`--network`, default devnet).
 pub fn verify(proof: &Proof, anchor: &str) -> Result<Value> {
+    verify_network(
+        proof,
+        anchor,
+        crate::network::operator_network().unwrap_or(crate::network::Network::Devnet),
+    )
+}
+/// A proof is valid only under the network profile its signed events are bound to.
+pub fn verify_network(
+    proof: &Proof,
+    anchor: &str,
+    network: crate::network::Network,
+) -> Result<Value> {
+    crate::network::require(
+        &proof.attestations.iter().map(|a| a.event.clone()).collect::<Vec<_>>(),
+        network,
+    )?;
     let c = crystal_entry(&proof.entry)?;
     let word = c.kind == CrystalKind::Word;
     if proof.format
@@ -800,7 +822,7 @@ pub fn verify(proof: &Proof, anchor: &str) -> Result<Value> {
         .iter()
         .find(|a| action(&a.event) == "word.mint" && d(&a.event)["root"] == proof.entry.root.0)
         .ok_or_else(|| anyhow!("Missing proven native mint"))?;
-    let mut result = json!({"path_verified":true,"root":proof.entry.root,"identity":proof.entry.word,"attested_state":"minted","at_sequence":seq(&proof.attestations.last().unwrap().event)?,"expected_signer":anchor,"dependency_count":roots.len()-1,"dependencies":d(&native.event)["letters"],"scope":"selected signed transition and dependency paths with block payload commitments; not complete/current history, consensus, global naming, factual truth, or outer block signature"});
+    let mut result = json!({"network":network.as_str(),"path_verified":true,"root":proof.entry.root,"identity":proof.entry.word,"attested_state":"minted","at_sequence":seq(&proof.attestations.last().unwrap().event)?,"expected_signer":anchor,"dependency_count":roots.len()-1,"dependencies":d(&native.event)["letters"],"scope":"selected signed transition and dependency paths with block payload commitments; not complete/current history, consensus, global naming, factual truth, or outer block signature"});
     result[if word {
         "word_dependency_path_verified"
     } else {

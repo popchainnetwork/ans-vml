@@ -318,10 +318,7 @@ fn transact(
         bail!("Explicit local custodian required (--as)");
     }
     let dir = root.join("custodians").join(owner);
-    if !["chain.ndjson", "xmss-demo.seed", "xmss-demo.state"]
-        .iter()
-        .all(|name| dir.join(name).is_file())
-    {
+    if !crate::exploit::custodian_initialized(&dir) {
         bail!(
             "Initialize a fresh local test custodian first; this service never creates identities"
         );
@@ -626,10 +623,7 @@ fn custodian_ready(root: &Path, owner: &str) -> Result<std::path::PathBuf> {
         bail!("Explicit local custodian required (--as)");
     }
     let dir = root.join("custodians").join(owner);
-    if !["chain.ndjson", "xmss-demo.seed", "xmss-demo.state"]
-        .iter()
-        .all(|name| dir.join(name).is_file())
-    {
+    if !crate::exploit::custodian_initialized(&dir) {
         bail!("Initialize a fresh local test custodian first; this service never creates identities");
     }
     Ok(dir)
@@ -724,10 +718,7 @@ pub fn adopt_book_crystal(root: &Path, owner: &str, crystal: &Crystal) -> Result
         bail!("Explicit local custodian required (--as)");
     }
     let dir = root.join("custodians").join(owner);
-    if !["chain.ndjson", "xmss-demo.seed", "xmss-demo.state"]
-        .iter()
-        .all(|name| dir.join(name).is_file())
-    {
+    if !crate::exploit::custodian_initialized(&dir) {
         bail!("Initialize a fresh local test custodian first; this service never creates identities");
     }
     // Cache bytes only; lifecycle authority remains the signed journal. Provenance/root stay crystal-bound.

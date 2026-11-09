@@ -14,6 +14,7 @@ mod words;
 mod dictionary;
 mod dictionary_read;
 mod dictionary_web;
+mod network;
 use anyhow::{anyhow, bail, Result};
 use rand::RngCore;
 use serde_json::{json, Value};
@@ -541,9 +542,30 @@ fn run() -> Result<()> {
             args.drain(i..=i + 1);
         }
     }
+    let mut network_flags: BTreeMap<&str, String> = BTreeMap::new();
+    for flag in ["--network", "--confirm-network", "--custodian-key"] {
+        if let Some(i) = args.iter().position(|s| s == flag) {
+            let value = args.get(i + 1).ok_or(anyhow!("Missing flag value"))?.clone();
+            network_flags.insert(flag, value);
+            args.drain(i..=i + 1);
+        }
+    }
+    let selected = network_flags.get("--network").map(|v| network::Network::parse(v)).transpose()?;
+    let confirmed = network_flags.get("--confirm-network").map(|v| network::Network::parse(v)).transpose()?;
+    if confirmed.is_some() && confirmed != selected {
+        bail!("--confirm-network must repeat the exact --network value");
+    }
+    network::set_operator(selected, confirmed, network_flags.get("--custodian-key").map(PathBuf::from));
     let cmd = args.first().map(String::as_str).unwrap_or("help");
+    if cmd == "network" {
+        out(network_cli(&root, &actor, &args[1..])?);
+        return Ok(());
+    }
+    if (cmd == "init" || cmd == "install") && selected.is_some_and(|n| n.protected()) {
+        bail!("Protected profiles are initialized only with `ans --network N --confirm-network N --custodian-key PATH network init WORD`");
+    }
     if cmd == "help" || cmd == "--help" {
-        println!("ans init|install <word> | grow --plan|--apply [--hosts hosts.toml] | up | status | chat [to text] | skill list|add|grant|revoke|run | node [resolve /word/channel] | book resolve <word> | attest | word <slowo> [--lang pl|en|nl | --crystal] | boot --plan | book seed|add|list|import-kaikki|serve --port N | mint <word>|--all | delegate|revoke <word> <scope> | run <word> [--plan] [input] | sync http://127.0.0.1:PORT | licenses | inventory\nDictionary: dictionary --help. Read-only list/show/export/verify/serve; owner write/draft/validate/mint/inspect (write authors CLI text; draft uses a crystal file) require explicit --as and sign journal events. Advanced: apply REQUEST.json.\nGlobal: --data DIR --as WORD. LOCAL DEMO; Apache-2.0 core; paid modules excluded.");
+        println!("ans init|install <word> | grow --plan|--apply [--hosts hosts.toml] | up | status | chat [to text] | skill list|add|grant|revoke|run | node [resolve /word/channel] | book resolve <word> | attest | word <slowo> [--lang pl|en|nl | --crystal] | boot --plan | book seed|add|list|import-kaikki|serve --port N | mint <word>|--all | delegate|revoke <word> <scope> | run <word> [--plan] [input] | sync http://127.0.0.1:PORT | licenses | inventory\nDictionary: dictionary --help. Read-only list/show/export/verify/serve; owner write/draft/validate/mint/inspect (write authors CLI text; draft uses a crystal file) require explicit --as and sign journal events. Advanced: apply REQUEST.json.\nNetwork: network throwaway-key PATH | --network N --confirm-network N --custodian-key PATH network init WORD | --as WORD network show (see MAINNET-READINESS.md; mainnet signing disabled).\nGlobal: --data DIR --as WORD --network devnet|testnet|rehearsal|mainnet. LOCAL DEMO; Apache-2.0 core; paid modules excluded.");
         return Ok(());
     }
     if cmd == "dictionary" {
@@ -717,6 +739,43 @@ fn run() -> Result<()> {
             Ok(())
         }
         _ => bail!("Unknown command; ans --help"),
+    }
+}
+fn network_cli(root: &Path, actor: &str, args: &[String]) -> Result<Value> {
+    match args.first().map(String::as_str) {
+        Some("throwaway-key") => {
+            let path = PathBuf::from(args.get(1).ok_or(anyhow!("ans network throwaway-key /ABSOLUTE/PATH"))?);
+            network::throwaway_key(&path)
+        }
+        Some("init") => {
+            let word = normalize(args.get(1).ok_or(anyhow!("ans --network N --confirm-network N --custodian-key PATH network init WORD"))?)?;
+            let network = network::operator_network()
+                .filter(|n| n.protected())
+                .ok_or(anyhow!("network init requires --network testnet|rehearsal|mainnet (devnet uses ans init)"))?;
+            let key = network::operator_key().ok_or(anyhow!("--custodian-key PATH is required"))?;
+            let dir = root.join("custodians").join(&word);
+            if dir.join("chain.ndjson").exists() || dir.join(network::PROFILE_FILE).exists() {
+                bail!("Custodian {word} already exists; profiles are never changed in place");
+            }
+            // Check every operator/key gate before writing anything.
+            network::admit_operator(&dir, network, &key)?;
+            fs::create_dir_all(&dir)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+            }
+            let profile = network::Profile { schema: 1, network, key_path: key };
+            fs::write(dir.join(network::PROFILE_FILE), serde_json::to_vec_pretty(&profile)?)?;
+            let verification = network::with_init(|| exploit::initialize(&word, &dir))?;
+            Ok(json!({"ok":true,"word":format!("{word}.ans"),"network":network.as_str(),"key_path":profile.key_path,"private_key":"external file; never copied or printed","verification":verification}))
+        }
+        Some("show") => {
+            let dir = root.join("custodians").join(actor);
+            let profile = network::load(&dir)?;
+            Ok(json!({"custodian":actor,"network":profile.as_ref().map(|p|p.network.as_str()).unwrap_or("devnet"),"key_path":profile.as_ref().map(|p|p.key_path.clone()),"mainnet_signing_enabled":network::MAINNET_SIGNING_ENABLED}))
+        }
+        _ => bail!("ans network throwaway-key PATH | [--network N --confirm-network N --custodian-key PATH] network init WORD | --as WORD network show"),
     }
 }
 fn mcp_call(actor: &str, op: &str, mut body: Value) -> Result<Value> {

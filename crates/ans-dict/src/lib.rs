@@ -3,6 +3,7 @@
 //! ANS dictionary core. A crystal is a set of leaves; its index is a SHA3-256
 //! merkle root over canonically serialized, sorted leaves. Integrity only:
 //! a root proves the leaves are unchanged, not that they are linguistically correct.
+pub mod author;
 pub mod book;
 pub mod exec;
 pub mod forms;

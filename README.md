@@ -198,17 +198,55 @@ There is no second ledger or signing engine.
 
 ```sh
 "$ANS" dictionary --help
+"$ANS" --as alice dictionary write character d --license CC0-1.0 --source local-test --attribution "test author"
+"$ANS" --as alice dictionary write word dom --lang pl --meaning house --unverified --operation-id word-dom
 "$ANS" --as alice dictionary draft assets/crystals/rdzen.crystal.json --operation-id word-draft
 "$ANS" --as alice dictionary validate rdzen --operation-id word-validate
 "$ANS" --as alice dictionary mint rdzen --operation-id word-mint
 "$ANS" --as alice dictionary inspect rdzen
 ```
 
-The short example assumes its character dependencies are already minted; use the
-complete fresh bootstrap below when starting from nothing.
+### Author a NEW word or character from CLI text
 
-Draft reads one regular crystal file (at most 8 MiB), checks its Merkle root and
-root-bound identity, and derives the spelling/language from that identity. It stays
+`dictionary write` composes a crystal with `Crystal::build` from explicit CLI
+inputs and then drafts it through the same typed apply engine. No handwritten
+request JSON and no implicit validate/mint. Identity, schema, content, language,
+source, license and attribution are root-bound leaves. Wrapper-only metadata is
+not treated as authority. Unicode identity bytes are preserved as typed; they are
+not silently NFC-normalized or trimmed. The runtime hashes the authored gloss; it
+does not claim to understand language semantics, clear rights, or certify a
+definition.
+
+```sh
+"$ANS" --as alice dictionary write character d \
+  --license CC0-1.0 --source local-test --attribution "test author" \
+  --operation-id char-d
+"$ANS" --as alice dictionary write word oak --lang en --meaning "a tree" \
+  --unverified --operation-id word-oak
+```
+
+Provide either `--license` and `--source` (optional `--attribution`) or
+`--unverified`, which records transparent `unspecified/unverified` /
+`user-supplied; unverified` markers. Do not invent Wiktionary or other rights
+claims. Character authoring uses language `und` and a minimal supported character
+schema (scalar + codepoint note), not a fake universal UCD alphabet. Word mint
+still requires each **lowercase spelling scalar** to be a separately minted
+character under the existing `letters_of` rule; `write` does not auto-bind
+`character_reference` leaves, so the root stays deterministic from the supplied
+bytes alone.
+
+Lifecycle `WordId` is `(language, spelling)`. Revising an existing pair is
+refused. Crystal cache filenames remain spelling-fold based (legacy protocol);
+the same folded spelling in another language is rejected rather than silently
+overwriting the cache or mint event hash. Use a distinct spelling when you need
+another language. Existing golden `rdzeń` roots and leaf protocol are unchanged.
+
+The short fixture example assumes its character dependencies are already minted;
+use the complete fresh bootstrap below when starting from nothing. For a fully
+authored path, write/validate/mint the required characters first, then the word.
+
+Draft from file still reads one regular crystal file (at most 8 MiB), checks its Merkle root and
+root-bound identity, and derives the spelling/language from that identity. Write and draft both stay
 Draft; validation and mint remain separate explicit steps. Invalid files/arguments
 are rejected before signing or identity creation. Queries accept a word, character,
 translation/form or exact content root; ambiguous names require a root. Resolution

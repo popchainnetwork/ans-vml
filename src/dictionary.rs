@@ -323,11 +323,19 @@ Read-only (no signer or identity creation):
   ans dictionary serve PROOF_FILE --expect-key HEX [--port N]
 
 Owner commands SIGN journal intent/outcome events (existing disposable --as required):
+  ans --as OWNER dictionary write character CHAR (--unverified | --license L --source S [--attribution A]) [--operation-id ID]
+  ans --as OWNER dictionary write word WORD --lang LANG --meaning TEXT (--unverified | --license L --source S [--attribution A]) [--operation-id ID]
   ans --as OWNER dictionary draft CRYSTAL_FILE [--operation-id ID]
   ans --as OWNER dictionary validate WORD_OR_ROOT [--operation-id ID]
   ans --as OWNER dictionary mint WORD_OR_ROOT [--operation-id ID]
   ans --as OWNER dictionary inspect WORD_OR_ROOT [--operation-id ID]
 
+write composes a NEW crystal from explicit CLI text (no handwritten JSON), binds
+identity/schema/content/language/source/license/attribution as root leaves, then
+drafts only. It does not validate, mint, understand language, or clear rights.
+Unicode identity bytes are preserved as typed; they are not silently normalized.
+Characters use language und. Word identity is language+spelling; the same spelling
+in another language is a different entry. Revising an existing identity is refused.
 Draft checks Merkle/identity bytes but stays Draft; validate is a separate structural step.
 Mint requires Validated state and verified minted characters; mint is not execution permission.
 Inspect signs a receipt; show/list are read-only alternatives.
@@ -354,6 +362,131 @@ fn operation_id(explicit: Option<&str>) -> Result<OperationId> {
         bail!("Operation ID must contain 1–128 bytes");
     }
     Ok(OperationId(id))
+}
+fn take_flag(args: &[String], name: &str) -> Result<(Option<String>, Vec<String>)> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut value = None;
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == name {
+            if value.is_some() {
+                bail!("Flag {name} may be supplied only once");
+            }
+            let v = args
+                .get(i + 1)
+                .ok_or_else(|| anyhow!("Flag {name} requires a value"))?;
+            if v.starts_with('-') {
+                bail!("Flag {name} requires an explicit value");
+            }
+            value = Some(v.clone());
+            i += 2;
+            continue;
+        }
+        out.push(args[i].clone());
+        i += 1;
+    }
+    Ok((value, out))
+}
+fn take_switch(args: &[String], name: &str) -> Result<(bool, Vec<String>)> {
+    let mut out = Vec::with_capacity(args.len());
+    let mut seen = false;
+    for a in args {
+        if a == name {
+            if seen {
+                bail!("Flag {name} may be supplied only once");
+            }
+            seen = true;
+            continue;
+        }
+        out.push(a.clone());
+    }
+    Ok((seen, out))
+}
+fn provenance_from_args(args: &[String]) -> Result<(ans_dict::author::Provenance, Vec<String>)> {
+    let (unverified, args) = take_switch(args, "--unverified")?;
+    let (license, args) = take_flag(&args, "--license")?;
+    let (source, args) = take_flag(&args, "--source")?;
+    let (attribution, args) = take_flag(&args, "--attribution")?;
+    let provenance = if unverified {
+        if license.is_some() || source.is_some() || attribution.is_some() {
+            bail!("Use either --unverified or explicit --license/--source, not both");
+        }
+        ans_dict::author::Provenance::unverified()
+    } else {
+        let license = license.ok_or_else(|| {
+            anyhow!("Authoring requires --license LICENSE and --source SOURCE, or --unverified")
+        })?;
+        let source = source.ok_or_else(|| {
+            anyhow!("Authoring requires --license LICENSE and --source SOURCE, or --unverified")
+        })?;
+        ans_dict::author::Provenance::explicit(&source, &license, attribution.as_deref())?
+    };
+    Ok((provenance, args))
+}
+fn write_command(args: &[String]) -> Result<(Command, Value)> {
+    if args.is_empty() {
+        bail!("Usage: dictionary write character|word ...; see dictionary --help");
+    }
+    let kind = args[0].as_str();
+    let (provenance, rest) = provenance_from_args(&args[1..])?;
+    match kind {
+        "character" => {
+            if rest.len() != 1 {
+                bail!("Usage: dictionary write character CHAR (--unverified | --license L --source S [--attribution A]) [--operation-id ID]");
+            }
+            let crystal = ans_dict::author::character(&rest[0], &provenance)?;
+            let summary = json!({
+                "kind":"character",
+                "id":crystal.id,
+                "language":"und",
+                "root":crystal.root,
+                "index":crystal.index(),
+                "provenance": if provenance.unverified {"user-supplied/unverified"} else {"user-supplied/author-asserted"},
+                "rights_claim":"not validated",
+                "semantic_understanding":false,
+                "next":"draft only; run validate then mint separately"
+            });
+            Ok((
+                Command::Draft {
+                    word: WordId { language: "und".into(), spelling: crystal.id.clone() },
+                    crystal: serde_json::from_str(&crystal.to_json())?,
+                },
+                summary,
+            ))
+        }
+        "word" => {
+            let (lang, rest) = take_flag(&rest, "--lang")?;
+            let (meaning, rest) = take_flag(&rest, "--meaning")?;
+            let lang = lang.ok_or_else(|| anyhow!("write word requires --lang LANG"))?;
+            let meaning = meaning.ok_or_else(|| anyhow!("write word requires --meaning TEXT"))?;
+            if rest.len() != 1 {
+                bail!("Usage: dictionary write word WORD --lang LANG --meaning TEXT (--unverified | --license L --source S [--attribution A]) [--operation-id ID]");
+            }
+            let crystal = ans_dict::author::word(&rest[0], &lang, &meaning, &provenance)?;
+            let required: Vec<String> = crystal.id.to_lowercase().chars().map(|c| c.to_string()).collect();
+            let summary = json!({
+                "kind":"word",
+                "id":crystal.id,
+                "language":lang,
+                "root":crystal.root,
+                "index":crystal.index(),
+                "provenance": if provenance.unverified {"user-supplied/unverified"} else {"user-supplied/author-asserted"},
+                "rights_claim":"not validated",
+                "semantic_understanding":false,
+                "character_references_bound":false,
+                "mint_requires_lowercase_characters":required,
+                "next":"draft only; mint each required character before word mint"
+            });
+            Ok((
+                Command::Draft {
+                    word: WordId { language: lang, spelling: crystal.id.clone() },
+                    crystal: serde_json::from_str(&crystal.to_json())?,
+                },
+                summary,
+            ))
+        }
+        _ => bail!("write supports character or word; see dictionary --help"),
+    }
 }
 fn draft_file(path: &str) -> Result<Command> {
     use std::io::Read;
@@ -415,6 +548,27 @@ pub fn cli(root: &Path, owner: &str, args: &[String]) -> Result<Value> {
         return Ok(json!({"help":HELP,"signer_opened":false}));
     }
     let command = args[0].as_str();
+    if command == "write" {
+        if owner.is_empty() {
+            bail!("Owner commands sign journal events; pass --as OWNER for an existing disposable offline identity. For read-only access use dictionary show/list");
+        }
+        let (explicit, write_args) = take_flag(&args[1..], "--operation-id")?;
+        // Failed composition must not open a signer or create an identity.
+        let (typed, authored) = write_command(&write_args)?;
+        let id = operation_id(explicit.as_deref())?;
+        let mut result = apply(
+            root,
+            owner,
+            Request {
+                op_id: id,
+                command: typed,
+            },
+        )?;
+        if let Some(obj) = result.as_object_mut() {
+            obj.insert("authored".into(), authored);
+        }
+        return Ok(result);
+    }
     if matches!(command, "draft" | "validate" | "mint" | "inspect") {
         if args.len() != 2 && args.len() != 4 {
             bail!("Usage: dictionary {command} TARGET [--operation-id ID]; use dictionary --help");
@@ -1071,6 +1225,327 @@ mod tests {
         assert_eq!(h.journal().len(), before);
     }
     #[test]
+    fn authored_write_cli_drafts_only_and_keeps_identity_rules() {
+        let h = Home::new();
+        let ch = cli(
+            &h.0,
+            "alice",
+            &cli_args(&[
+                "write",
+                "character",
+                "d",
+                "--license",
+                "CC0-1.0",
+                "--source",
+                "local-test",
+                "--attribution",
+                "test",
+                "--operation-id",
+                "char-d",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(status(&ch), "accepted");
+        assert_eq!(ch["receipt"]["entry"]["state"], "draft");
+        assert_eq!(ch["authored"]["kind"], "character");
+        assert_eq!(ch["authored"]["rights_claim"], "not validated");
+        assert_eq!(ch["authored"]["semantic_understanding"], false);
+        let root_d = ch["authored"]["root"].as_str().unwrap().to_owned();
+        assert_eq!(
+            status(
+                &cli(
+                    &h.0,
+                    "alice",
+                    &cli_args(&["validate", "d", "--operation-id", "char-d-validate"])
+                )
+                .unwrap()
+            ),
+            "accepted"
+        );
+        assert_eq!(
+            status(
+                &cli(
+                    &h.0,
+                    "alice",
+                    &cli_args(&["mint", "d", "--operation-id", "char-d-mint"])
+                )
+                .unwrap()
+            ),
+            "accepted"
+        );
+        for (ch, id) in [("o", "char-o"), ("m", "char-m")] {
+            assert_eq!(
+                status(
+                    &cli(
+                        &h.0,
+                        "alice",
+                        &cli_args(&[
+                            "write",
+                            "character",
+                            ch,
+                            "--unverified",
+                            "--operation-id",
+                            id
+                        ])
+                    )
+                    .unwrap()
+                ),
+                "accepted"
+            );
+            assert_eq!(
+                status(
+                    &cli(
+                        &h.0,
+                        "alice",
+                        &cli_args(&["validate", ch, "--operation-id", &format!("{id}-v")])
+                    )
+                    .unwrap()
+                ),
+                "accepted"
+            );
+            assert_eq!(
+                status(
+                    &cli(
+                        &h.0,
+                        "alice",
+                        &cli_args(&["mint", ch, "--operation-id", &format!("{id}-m")])
+                    )
+                    .unwrap()
+                ),
+                "accepted"
+            );
+        }
+        let early = cli(
+            &h.0,
+            "alice",
+            &cli_args(&[
+                "write",
+                "word",
+                "dom",
+                "--lang",
+                "pl",
+                "--meaning",
+                "house",
+                "--license",
+                "CC0-1.0",
+                "--source",
+                "local-test",
+                "--operation-id",
+                "word-dom",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(status(&early), "accepted");
+        assert_eq!(early["receipt"]["entry"]["state"], "draft");
+        assert_eq!(early["authored"]["character_references_bound"], false);
+        let word_root = early["authored"]["root"].as_str().unwrap().to_owned();
+        assert_ne!(word_root, root_d);
+        assert_eq!(
+            status(
+                &cli(
+                    &h.0,
+                    "alice",
+                    &cli_args(&["validate", "dom", "--operation-id", "word-dom-validate"])
+                )
+                .unwrap()
+            ),
+            "accepted"
+        );
+        // Before this unit only d/o/m were minted; minting the word must succeed now.
+        let minted = cli(
+            &h.0,
+            "alice",
+            &cli_args(&["mint", "dom", "--operation-id", "word-dom-mint"]),
+        )
+        .unwrap();
+        assert_eq!(status(&minted), "accepted");
+        assert_eq!(minted["receipt"]["entry"]["state"], "minted");
+        let retry = cli(
+            &h.0,
+            "alice",
+            &cli_args(&["mint", "dom", "--operation-id", "word-dom-mint"]),
+        )
+        .unwrap();
+        assert_eq!(retry["retry"], true);
+        assert_eq!(retry["receipt"], minted["receipt"]);
+        let conflict = cli(
+            &h.0,
+            "alice",
+            &cli_args(&["inspect", "dom", "--operation-id", "word-dom-mint"]),
+        )
+        .unwrap();
+        assert_eq!(status(&conflict), "rejected");
+        // Lifecycle WordId is language-scoped, but crystal cache filenames are spelling-fold
+        // only. A second language with the same folded spelling must refuse, not overwrite.
+        let same_spelling_other_lang = cli(
+            &h.0,
+            "alice",
+            &cli_args(&[
+                "write",
+                "word",
+                "dom",
+                "--lang",
+                "en",
+                "--meaning",
+                "house",
+                "--unverified",
+                "--operation-id",
+                "word-dom-en",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(status(&same_spelling_other_lang), "rejected");
+        assert!(same_spelling_other_lang["receipt"]["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("refusing to overwrite")
+            || same_spelling_other_lang["receipt"]["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("immutable root")
+            || same_spelling_other_lang["receipt"]["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("mismatch"));
+        // Distinct spelling in another language is admitted as its own WordId/root.
+        let en = cli(
+            &h.0,
+            "alice",
+            &cli_args(&[
+                "write",
+                "word",
+                "oak",
+                "--lang",
+                "en",
+                "--meaning",
+                "a tree",
+                "--unverified",
+                "--operation-id",
+                "word-oak-en",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(status(&en), "accepted");
+        assert_ne!(en["authored"]["root"], early["authored"]["root"]);
+        assert_eq!(en["receipt"]["entry"]["word"]["language"], "en");
+        // Same language+spelling collision refuses revision.
+        assert_eq!(
+            status(
+                &cli(
+                    &h.0,
+                    "alice",
+                    &cli_args(&[
+                        "write",
+                        "word",
+                        "dom",
+                        "--lang",
+                        "pl",
+                        "--meaning",
+                        "home",
+                        "--unverified",
+                        "--operation-id",
+                        "word-dom-rev"
+                    ])
+                )
+                .unwrap()
+            ),
+            "rejected"
+        );
+        // Missing required characters reject word mint.
+        let kot = cli(
+            &h.0,
+            "alice",
+            &cli_args(&[
+                "write",
+                "word",
+                "kot",
+                "--lang",
+                "pl",
+                "--meaning",
+                "cat",
+                "--unverified",
+                "--operation-id",
+                "word-kot",
+            ]),
+        )
+        .unwrap();
+        assert_eq!(status(&kot), "accepted");
+        assert_eq!(
+            status(
+                &cli(
+                    &h.0,
+                    "alice",
+                    &cli_args(&["validate", "kot", "--operation-id", "word-kot-v"])
+                )
+                .unwrap()
+            ),
+            "accepted"
+        );
+        let missing = cli(
+            &h.0,
+            "alice",
+            &cli_args(&["mint", "kot", "--operation-id", "word-kot-m"]),
+        )
+        .unwrap();
+        assert_eq!(status(&missing), "rejected");
+        assert!(missing["receipt"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("not minted"));
+        // Changing committed meaning changes root (fresh identity spelling).
+        let other = ans_dict::author::word(
+            "kot",
+            "pl",
+            "cat",
+            &ans_dict::author::Provenance::unverified(),
+        )
+        .unwrap();
+        let changed = ans_dict::author::word(
+            "kot",
+            "pl",
+            "feline",
+            &ans_dict::author::Provenance::unverified(),
+        )
+        .unwrap();
+        assert_ne!(other.root, changed.root);
+        assert!(cli(
+            &h.0,
+            "alice",
+            &cli_args(&["write", "character", "", "--unverified"])
+        )
+        .is_err());
+        assert!(cli(
+            &h.0,
+            "alice",
+            &cli_args(&["write", "word", "x", "--lang", "pl", "--meaning", "y"])
+        )
+        .is_err());
+        assert!(cli(&h.0, "", &cli_args(&["write", "character", "z", "--unverified"])).is_err());
+        let before = h.journal().len();
+        assert!(cli(
+            &h.0,
+            "alice",
+            &cli_args(&["write", "word", " bad", "--lang", "pl", "--meaning", "x", "--unverified"])
+        )
+        .is_err());
+        assert_eq!(h.journal().len(), before);
+        // Drafts cannot execute.
+        assert_eq!(
+            status(&h.apply(
+                "run-authored",
+                Command::Run {
+                    root: ContentRoot(word_root)
+                }
+            )),
+            "rejected"
+        );
+        let mints = h
+            .journal()
+            .iter()
+            .filter(|e| action(e) == "word.mint")
+            .count();
+        assert_eq!(mints, 4);
+    }
     fn signer_lock_fails_closed_and_mcp_only_prepares_request() {
         let h = Home::new();
         let dir = h.0.join("custodians/alice");

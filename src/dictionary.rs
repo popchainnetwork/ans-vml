@@ -165,12 +165,21 @@ fn evaluate(
                 }
                 Command::Mint{..} => {
                     if e.state!=State::Validated { bail!("Mint requires validated state"); }
-                    if crate::rule::mint_proof(&c.root,journal,&[],&crate::exploit::event_valid).is_some() { bail!("A native mint already exists; automatic reconciliation is refused"); }
-                    let letters = if c.kind==CrystalKind::Letter { vec![] } else {
-                        crate::rule::letters_of(&c,&|ch| entries.values().find(|e|e.word.language=="und" && e.word.spelling==ch.to_string() && e.state==State::Minted && Crystal::parse(&e.crystal.to_string()).is_ok_and(|c|c.kind==CrystalKind::Letter)).and_then(|e|journal.iter().find(|v|action(v)=="word.mint" && data(v)["root"]==e.root.0 && data(v)["layer"]==1)).map(|v|(data(v)["root"].as_str().unwrap_or("").to_owned(),v["seq"].clone())))?
-                    };
-                    append(owner,dir,"word.mint",json!({"word":c.id,"root":c.root,"file":c.file_name(),"layer":if c.kind==CrystalKind::Letter{1}else{2},"letters":letters,"op_id":req.op_id,"service":"dictionary","chain":"local test journal; not mainnet"}))?;
-                    e.state=State::Minted;
+                    if let Some(existing) = crate::rule::mint_proof(&c.root,journal,&[],&crate::exploit::event_valid) {
+                        // Idempotent completion: same operation already wrote the native effect
+                        // (crash between word.mint and dictionary.outcome). Foreign mints stay refused.
+                        if data(existing)["op_id"] == req.op_id.0 {
+                            e.state = State::Minted;
+                        } else {
+                            bail!("A native mint already exists; automatic reconciliation is refused");
+                        }
+                    } else {
+                        let letters = if c.kind==CrystalKind::Letter { vec![] } else {
+                            crate::rule::letters_of(&c,&|ch| entries.values().find(|e|e.word.language=="und" && e.word.spelling==ch.to_string() && e.state==State::Minted && Crystal::parse(&e.crystal.to_string()).is_ok_and(|c|c.kind==CrystalKind::Letter)).and_then(|e|journal.iter().find(|v|action(v)=="word.mint" && data(v)["root"]==e.root.0 && data(v)["layer"]==1)).map(|v|(data(v)["root"].as_str().unwrap_or("").to_owned(),v["seq"].clone())))?
+                        };
+                        append(owner,dir,"word.mint",json!({"word":c.id,"root":c.root,"file":c.file_name(),"layer":if c.kind==CrystalKind::Letter{1}else{2},"letters":letters,"op_id":req.op_id,"service":"dictionary","chain":"local test journal; not mainnet"}))?;
+                        e.state=State::Minted;
+                    }
                 }
                 Command::Inspect{..} => {},
                 Command::Run{..} => bail!("Execution refused: this service has no executable-permission approval adapter; minting is not permission"),
@@ -236,14 +245,7 @@ fn transact(
             bail!("Pending intent command digest mismatch");
         }
         let receipt = match data(&intent)["canonical"].as_bool() {
-            Some(true) => Receipt {
-                status: Status::Interrupted,
-                reason: Some(
-                    "Previous attempt has no durable outcome; effects are not resumed or inferred"
-                        .into(),
-                ),
-                entry: None,
-            },
+            Some(true) => recover_canonical_pending(&journal, &intent, &request)?,
             Some(false) => {
                 let index=journal.iter().position(|e|action(e)=="dictionary.outcome" && data(e)["canonical"]==true && data(e)["op_id"]==request.op_id.0).ok_or_else(||anyhow!("Interrupted retry has no completed original receipt; refusing to infer effects"))?;
                 // Authenticate and replay the completed original before copying a receipt.
@@ -313,6 +315,56 @@ pub fn proposal(value: Value) -> Result<Value> {
         json!({"request":request,"executed":false,"signed":false,"next":"Custodian reviews and invokes ans dictionary apply REQUEST.json with explicit --as"}),
     )
 }
+
+fn recover_canonical_pending(
+    journal: &[Value],
+    intent: &Value,
+    request: &Request,
+) -> Result<Receipt> {
+    // Default: fail closed — do not guess success.
+    let interrupted = Receipt {
+        status: Status::Interrupted,
+        reason: Some(
+            "Previous attempt has no durable outcome; effects are not resumed or inferred".into(),
+        ),
+        entry: None,
+    };
+    let Command::Mint { root } = &request.command else {
+        return Ok(interrupted);
+    };
+    // Only complete when the native mint for THIS op_id is already durable after the intent.
+    let intent_seq = intent["seq"].as_u64().unwrap_or(0);
+    let Some(native) = journal.iter().find(|e| {
+        action(e) == "word.mint"
+            && e["seq"].as_u64().unwrap_or(0) > intent_seq
+            && data(e)["root"] == root.0
+            && data(e)["op_id"] == request.op_id.0
+    }) else {
+        return Ok(interrupted);
+    };
+    let Some(prior) = journal.iter().rev().find_map(|e| {
+        if action(e) != "dictionary.outcome" || data(e)["receipt"]["status"] != "accepted" {
+            return None;
+        }
+        let entry: Entry = serde_json::from_value(data(e)["receipt"]["entry"].clone()).ok()?;
+        (entry.root == *root && entry.state == State::Validated).then_some(entry)
+    }) else {
+        return Ok(interrupted);
+    };
+    if prior.crystal["root"] != root.0 {
+        return Ok(interrupted);
+    }
+    let mut entry = prior;
+    entry.state = State::Minted;
+    let _ = native; // matched above
+    Ok(Receipt {
+        status: Status::Accepted,
+        reason: Some(
+            "Recovered: native word.mint for this operation was durable before outcome".into(),
+        ),
+        entry: Some(entry),
+    })
+}
 /// Adopt an existing book/UCD crystal into the typed dictionary lifecycle and mint it.
 /// Used by legacy `ans mint` / `mint-alphabet` so there is one ledger path: draft → validate → mint
 /// with dictionary.intent/outcome and the same native word.mint event shape the strict reader expects.
@@ -329,107 +381,156 @@ pub fn adopt_book_crystal(root: &Path, owner: &str, crystal: &Crystal) -> Result
     {
         bail!("Initialize a fresh local test custodian first; this service never creates identities");
     }
+    // Cache bytes only; lifecycle authority remains the signed journal. Provenance/root stay crystal-bound.
     Book::open(&root.join("book"))?.add(crystal)?;
     let content = ContentRoot(crystal.root.clone());
-    let lifecycle = match crate::dictionary_read::show(root, owner, &crystal.root, None) {
-        Ok(item) => item.lifecycle,
-        Err(_) => None,
-    };
-    let journal = crate::exploit::journal(owner, &dir)?;
-    let bare = crate::rule::mint_proof(
-        &crystal.root,
-        &journal,
-        &[],
-        &crate::exploit::event_valid,
-    );
-    if lifecycle == Some(State::Minted) {
-        let block = bare.map(|e| e["seq"].clone());
-        return Ok(json!({
-            "already": true,
-            "lifecycle": "minted",
-            "service": "dictionary",
-            "word": crystal.id,
-            "root": crystal.root,
-            "block": block,
-            "layer": if crystal.kind == CrystalKind::Letter { 1 } else { 2 },
-            "network": "none: local journal only",
-            "private_key": "never printed"
-        }));
-    }
-    if lifecycle.is_none() {
-        if let Some(e) = bare {
-            return Ok(json!({
-                "already": true,
-                "legacy_native_only": true,
-                "lifecycle": null,
-                "refused_auto_reconcile": true,
-                "word": crystal.id,
-                "root": crystal.root,
-                "block": e["seq"],
-                "next": "Native word.mint exists without dictionary lifecycle; automatic promotion is refused"
-            }));
-        }
-    }
     let word = word_id_from_crystal(crystal)?;
     let crystal_value: Value = serde_json::from_str(&crystal.to_json())?;
-    if lifecycle.is_none() {
-        ensure_accepted(apply(
-            root,
-            owner,
-            Request {
-                op_id: OperationId(format!("legacy-draft-{}", crystal.root)),
-                command: Command::Draft {
-                    word: word.clone(),
-                    crystal: crystal_value,
+    // Deterministic IDs identify retries of the SAME typed command; each apply still revalidates.
+    let draft_id = OperationId(format!("legacy-draft-{}", crystal.root));
+    let validate_id = OperationId(format!("legacy-validate-{}", crystal.root));
+    let mint_id = OperationId(format!("legacy-mint-{}", crystal.root));
+    for _ in 0..8 {
+        let lifecycle = match crate::dictionary_read::show(root, owner, &crystal.root, None) {
+            Ok(item) => item.lifecycle,
+            Err(_) => None,
+        };
+        let journal = crate::exploit::journal(owner, &dir)?;
+        let bare = crate::rule::mint_proof(
+            &crystal.root,
+            &journal,
+            &[],
+            &crate::exploit::event_valid,
+        );
+        if lifecycle == Some(State::Minted) {
+            let block = bare.map(|e| e["seq"].clone());
+            return Ok(json!({
+                "already": true,
+                "lifecycle": "minted",
+                "service": "dictionary",
+                "word": crystal.id,
+                "root": crystal.root,
+                "block": block,
+                "layer": if crystal.kind == CrystalKind::Letter { 1 } else { 2 },
+                "network": "none: local journal only",
+                "private_key": "never printed"
+            }));
+        }
+        if lifecycle.is_none() {
+            if let Some(e) = bare {
+                return Ok(json!({
+                    "already": true,
+                    "legacy_native_only": true,
+                    "lifecycle": null,
+                    "refused_auto_reconcile": true,
+                    "word": crystal.id,
+                    "root": crystal.root,
+                    "block": e["seq"],
+                    "next": "Native word.mint exists without dictionary lifecycle; automatic promotion is refused"
+                }));
+            }
+            let drafted = apply(
+                root,
+                owner,
+                Request {
+                    op_id: draft_id.clone(),
+                    command: Command::Draft {
+                        word: word.clone(),
+                        crystal: crystal_value.clone(),
+                    },
                 },
-            },
-        )?, "draft")?;
-    }
-    if lifecycle.is_none() || lifecycle == Some(State::Draft) {
-        ensure_accepted(apply(
-            root,
-            owner,
-            Request {
-                op_id: OperationId(format!("legacy-validate-{}", crystal.root)),
-                command: Command::Validate {
-                    root: content.clone(),
+            )?;
+            match drafted["receipt"]["status"].as_str() {
+                Some("accepted") => continue,
+                Some("rejected") => {
+                    let reason = drafted["receipt"]["reason"].as_str().unwrap_or("");
+                    if reason.contains("already has a lifecycle")
+                        || reason.contains("immutable root")
+                        || reason.contains("Dictionary service busy")
+                    {
+                        continue;
+                    }
+                    bail!("dictionary draft refused: {reason}");
+                }
+                other => bail!("dictionary draft returned unexpected status {other:?}"),
+            }
+        }
+        if lifecycle == Some(State::Draft) {
+            let validated = apply(
+                root,
+                owner,
+                Request {
+                    op_id: validate_id.clone(),
+                    command: Command::Validate {
+                        root: content.clone(),
+                    },
                 },
-            },
-        )?, "validate")?;
+            )?;
+            match validated["receipt"]["status"].as_str() {
+                Some("accepted") => continue,
+                Some("rejected") => {
+                    let reason = validated["receipt"]["reason"].as_str().unwrap_or("");
+                    if reason.contains("Validation requires draft")
+                        || reason.contains("Dictionary service busy")
+                    {
+                        continue;
+                    }
+                    bail!("dictionary validate refused: {reason}");
+                }
+                other => bail!("dictionary validate returned unexpected status {other:?}"),
+            }
+        }
+        if lifecycle == Some(State::Validated) {
+            let minted = apply(
+                root,
+                owner,
+                Request {
+                    op_id: mint_id.clone(),
+                    command: Command::Mint {
+                        root: content.clone(),
+                    },
+                },
+            )?;
+            match minted["receipt"]["status"].as_str() {
+                Some("accepted") => {
+                    let journal = crate::exploit::journal(owner, &dir)?;
+                    let native = crate::rule::mint_proof(
+                        &crystal.root,
+                        &journal,
+                        &[],
+                        &crate::exploit::event_valid,
+                    )
+                    .ok_or_else(|| anyhow!("Dictionary mint accepted without a native word.mint event"))?;
+                    return Ok(json!({
+                        "already": minted["retry"],
+                        "lifecycle": "minted",
+                        "service": "dictionary",
+                        "word": crystal.id,
+                        "root": crystal.root,
+                        "block": native["seq"],
+                        "layer": native["body"]["data"]["layer"],
+                        "op_id": minted["op_id"],
+                        "retry": minted["retry"],
+                        "state": "minted",
+                        "network": "none: local journal only",
+                        "private_key": "never printed"
+                    }));
+                }
+                Some("rejected") => {
+                    let reason = minted["receipt"]["reason"].as_str().unwrap_or("");
+                    if reason.contains("Mint requires validated")
+                        || reason.contains("Dictionary service busy")
+                        || reason.contains("native mint already exists")
+                    {
+                        continue;
+                    }
+                    bail!("dictionary mint refused: {reason}");
+                }
+                other => bail!("dictionary mint returned unexpected status {other:?}"),
+            }
+        }
     }
-    let minted = ensure_accepted(apply(
-        root,
-        owner,
-        Request {
-            op_id: OperationId(format!("legacy-mint-{}", crystal.root)),
-            command: Command::Mint {
-                root: content,
-            },
-        },
-    )?, "mint")?;
-    let entry = &minted["receipt"]["entry"];
-    let journal = crate::exploit::journal(owner, &dir)?;
-    let native = crate::rule::mint_proof(
-        &crystal.root,
-        &journal,
-        &[],
-        &crate::exploit::event_valid,
-    )
-    .ok_or_else(|| anyhow!("Dictionary mint accepted without a native word.mint event"))?;
-    Ok(json!({
-        "already": false,
-        "lifecycle": "minted",
-        "service": "dictionary",
-        "word": crystal.id,
-        "root": crystal.root,
-        "block": native["seq"],
-        "layer": native["body"]["data"]["layer"],
-        "op_id": minted["op_id"],
-        "retry": minted["retry"],
-        "state": entry["state"],
-        "network": "none: local journal only",
-        "private_key": "never printed"
-    }))
+    bail!("Dictionary adopt could not converge under concurrent writers; retry")
 }
 fn word_id_from_crystal(c: &Crystal) -> Result<WordId> {
     let identity = c
@@ -1240,6 +1341,8 @@ mod tests {
     }
     #[test]
     fn interrupted_native_mint_is_not_repeated_or_declared_successful() {
+        // Durable word.mint for the same op_id before outcome must complete once on recovery
+        // (accepted lifecycle), never invent a second native mint, and foreign op_ids still refuse.
         let h = Home::new();
         let c = crystal("a", true);
         let r = root(&c);
@@ -1262,10 +1365,21 @@ mod tests {
             "alice",
             &dir,
             "word.mint",
-            json!({"word":"a","root":r,"layer":1,"op_id":"mint-crash"}),
+            json!({
+                "word":"a",
+                "root":r.0,
+                "file":"u0061.crystal.json",
+                "layer":1,
+                "letters":[],
+                "op_id":"mint-crash",
+                "service":"dictionary",
+                "chain":"local test journal; not mainnet"
+            }),
         )
         .unwrap();
-        assert_eq!(status(&apply(&h.0, "alice", req).unwrap()), "interrupted");
+        let recovered = apply(&h.0, "alice", req).unwrap();
+        assert_eq!(status(&recovered), "accepted");
+        assert_eq!(recovered["receipt"]["entry"]["state"], "minted");
         assert_eq!(
             status(&h.apply("new-mint", Command::Mint { root: r })),
             "rejected"
@@ -1817,6 +1931,149 @@ mod tests {
         assert_eq!(legacy_only["legacy_native_only"], true);
         assert_eq!(legacy_only["refused_auto_reconcile"], true);
         assert_eq!(legacy_only["lifecycle"], Value::Null);
+    }
+    #[test]
+    fn mint_recovers_when_native_effect_durable_before_outcome() {
+        let h = Home::new();
+        let c = crystal("w", true);
+        let r = root(&c);
+        assert_eq!(status(&h.apply("d", draft(c.clone()))), "accepted");
+        assert_eq!(status(&h.apply("v", Command::Validate { root: r.clone() })), "accepted");
+        // Sign mint intent only, then native mint, skip outcome (simulate crash boundary).
+        let dir = h.0.join("custodians/alice");
+        let req = Request {
+            op_id: OperationId("crash-mint".into()),
+            command: Command::Mint { root: r.clone() },
+        };
+        let digest = hash(&serde_json::to_value(&req.command).unwrap()).unwrap();
+        let intent = append(
+            "alice",
+            &dir,
+            "dictionary.intent",
+            json!({"request":req,"command_digest":digest,"canonical":true}),
+        )
+        .unwrap();
+        let native = append(
+            "alice",
+            &dir,
+            "word.mint",
+            json!({
+                "word":"w",
+                "root":r.0,
+                "file":"u0077.crystal.json",
+                "layer":1,
+                "letters":[],
+                "op_id":"crash-mint",
+                "service":"dictionary",
+                "chain":"local test journal; not mainnet"
+            }),
+        )
+        .unwrap();
+        assert!(intent["seq"].as_u64().unwrap() < native["seq"].as_u64().unwrap());
+        let before_mints = h
+            .journal()
+            .iter()
+            .filter(|e| action(e) == "word.mint")
+            .count();
+        assert_eq!(before_mints, 1);
+        // Recovery on next admission must accept without a second native mint.
+        let recovered = h.apply("crash-mint", Command::Mint { root: r.clone() });
+        assert_eq!(status(&recovered), "accepted");
+        assert_eq!(recovered["receipt"]["entry"]["state"], "minted");
+        assert!(recovered["receipt"]["reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Recovered"));
+        assert_eq!(
+            h.journal()
+                .iter()
+                .filter(|e| action(e) == "word.mint")
+                .count(),
+            1
+        );
+        let shown = crate::dictionary_read::show(&h.0, "alice", &r.0, None).unwrap();
+        assert_eq!(shown.lifecycle, Some(State::Minted));
+        // Exact retry still returns one mint.
+        let retry = h.apply("crash-mint", Command::Mint { root: r });
+        assert_eq!(retry["retry"], true);
+        assert_eq!(
+            h.journal()
+                .iter()
+                .filter(|e| action(e) == "word.mint")
+                .count(),
+            1
+        );
+    }
+    #[test]
+    fn mint_crash_after_intent_before_native_stays_interrupted_not_guessed() {
+        let h = Home::new();
+        let c = crystal("v", true);
+        let r = root(&c);
+        assert_eq!(status(&h.apply("d", draft(c))), "accepted");
+        assert_eq!(status(&h.apply("v", Command::Validate { root: r.clone() })), "accepted");
+        let dir = h.0.join("custodians/alice");
+        let req = Request {
+            op_id: OperationId("intent-only".into()),
+            command: Command::Mint { root: r.clone() },
+        };
+        let digest = hash(&serde_json::to_value(&req.command).unwrap()).unwrap();
+        append(
+            "alice",
+            &dir,
+            "dictionary.intent",
+            json!({"request":req,"command_digest":digest,"canonical":true}),
+        )
+        .unwrap();
+        let recovered = h.apply("intent-only", Command::Mint { root: r.clone() });
+        // First call recovers pending as Interrupted (no native effect), then may proceed as retry?
+        // After Interrupted canonical outcome exists, same op_id retry returns Interrupted receipt.
+        assert_eq!(status(&recovered), "interrupted");
+        assert_eq!(
+            h.journal()
+                .iter()
+                .filter(|e| action(e) == "word.mint")
+                .count(),
+            0
+        );
+        // A new operation id can still mint successfully.
+        let minted = h.apply("intent-only-2", Command::Mint { root: r });
+        assert_eq!(status(&minted), "accepted");
+        assert_eq!(
+            h.journal()
+                .iter()
+                .filter(|e| action(e) == "word.mint")
+                .count(),
+            1
+        );
+    }
+    #[test]
+    fn concurrent_dictionary_lock_rejects_second_writer() {
+        let h = Home::new();
+        let c = crystal("u", true);
+        assert_eq!(status(&h.apply("d", draft(c.clone()))), "accepted");
+        let dir = h.0.join("custodians/alice");
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(dir.join("dictionary.lock"))
+            .unwrap();
+        fs4::FileExt::try_lock_exclusive(&lock).unwrap();
+        let err = apply(
+            &h.0,
+            "alice",
+            Request {
+                op_id: OperationId("busy".into()),
+                command: Command::Validate {
+                    root: root(&c),
+                },
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("busy"), "{err}");
+        drop(lock);
     }
     fn signer_lock_fails_closed_and_mcp_only_prepares_request() {
         let h = Home::new();

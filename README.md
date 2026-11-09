@@ -347,7 +347,28 @@ done
 
 The first four receipts are accepted; `run` is rejected. This service intentionally has **no executable-permission approval adapter** yet: even a minted entry cannot execute through it. Legacy `ans run`/delegation remain separate older interfaces and are NOT claimed to enforce this new lifecycle. For word minting, every referenced character must already have a native mint in the same local journal. Golden word roots and fixtures remain unchanged.
 
-Same ID + same command replays the original receipt while recording a new attempt; same ID + a different command is rejected. A new ID does not authorize repeating a mint. If a canonical first intent lacks a durable outcome on restart, it is closed as `interrupted`, not resumed. An unfinished same-command retry instead receives the completed original receipt (Accepted, Rejected or Interrupted); an unfinished conflicting retry is Rejected. Recovery validates the original completed prefix and never repeats native effects. Already-signed incompatible historical recovery outcomes are not rewritten or automatically repaired; strict replay still refuses them. If a native mint reached the journal before a crash, the service refuses automatic reconciliation or another mint: manual test-state review is required. No claim of atomicity between journal and kernel, backup rollback resistance or external exactly-once effects is made.
+Same ID + same command replays the original receipt while recording a new attempt; same ID + a different command is rejected. A new ID does not authorize repeating a mint. If a canonical first intent lacks a durable outcome on restart, it is closed as `interrupted`, not resumed. An unfinished same-command retry instead receives the completed original receipt (Accepted, Rejected or Interrupted); an unfinished conflicting retry is Rejected. Recovery validates the original completed prefix and never repeats native effects. Already-signed incompatible historical recovery outcomes are not rewritten or automatically repaired; strict replay still refuses them. If a native mint reached the journal before a crash, the service refuses automatic reconciliation or another mint: manual test-state review is required.
+
+### Signer locks and crash boundaries (experimental)
+
+Offline dictionary admission takes an exclusive `dictionary.lock`, then each signed
+append takes the exclusive custodian `writer.lock` while opening the XMSSMT signer.
+Legacy `record_local` callers (delegate/revoke/mint-meaning/skills) share **only**
+`writer.lock`, so they serialize signatures/indices with dictionary appends but do
+not hold `dictionary.lock` for a whole lifecycle. Concurrent dictionary writers on
+the same custodian fail closed with "Dictionary service busy".
+
+XMSS leaf indices are strictly increasing in the verified journal; the stateful
+signer advances only under `writer.lock`. Durable crash boundaries that tests
+exercise are: (1) after a synced `dictionary.intent` with no native effect —
+recovery records `interrupted` and does not invent success; (2) after a synced
+`word.mint` for the same `op_id` before `dictionary.outcome` — recovery completes
+that operation as accepted without a second native mint. These are process
+SIGKILL/exit boundaries after `sync_data`/`sync_kernel`, **not** a claim of
+power-loss atomicity across journal and kernel, copied-backup rollback safety,
+or production audit certification. Test-only crashes require an
+`allow-test-crash` sentinel in the disposable custodian directory.
+ No claim of atomicity between journal and kernel, backup rollback resistance or external exactly-once effects is made.
 
 Accepted entry state is replayed from signed outcomes. Writer admission and public snapshots now share strict semantic replay: accepted receipt state is independently re-evaluated against command/intent linkage, immutable content, legal transitions and exact native mint effects. Word dependencies must already be verified minted in the same custodian history before the word-mint intent. Legacy signed receipts that lack these dependencies are refused, not silently migrated or granted authority. The service emits linked native mint/outcome events; tests verify their XMSSMT/WOTS+ signatures and exact PopChain application payload binding. The outer PopChain block is not separately signed by this writer. Do not expose generic legacy signed-event admission as a lifecycle bypass.
 

@@ -30,16 +30,16 @@ img.atom{position:fixed;top:14px;left:14px;width:40px;animation:sp 8s linear inf
 
 
 <div id="boot"><div id="log"></div><div id="bar"><i></i></div></div>
-<button id="enter" type="button">POMIŃ INTRO →</button>
+<button id="enter" type="button">SKIP INTRO →</button>
 <svg id="doodle" viewBox="0 0 320 140" aria-label="signature doodle">
 <path d="M10 95c10-40 18-60 22-70m-22 70c14-14 34-14 30 4s-26 14-28 6M50 75c2 10 0 18 0 22m2-38v1M62 70c10 0 18-2 26-4m-14-12c-2 16-2 30 4 42M95 62l28 36m0-36-28 36M130 95c10-40 18-60 22-70m-22 70c14-14 34-14 30 4s-26 14-28 6M170 75c2 10 0 18 0 22m2-38v1M182 70c10 0 18-2 26-4m-14-12c-2 16-2 30 4 42M20 118c60 8 160 10 280-6"/>
 <g transform="translate(270 45)"><ellipse class="dd" rx="30" ry="10"/><ellipse class="dd" rx="30" ry="10" transform="rotate(60)"/><ellipse class="dd" rx="30" ry="10" transform="rotate(-60)"/><circle r="3" fill="#ff8"/></g>
 </svg>
-<div id="login-layer"><form class="login-card" id="login-form"><div class="brand">bitxbit / ANS</div><h2>Twój custodian</h2><p>Wejdź do swojej przestrzeni.</p><label for="custodian">Słowo ANS</label><input id="custodian" value="pawel.ans" placeholder="np. pawel.ans" autocapitalize="none" autocomplete="username" spellcheck="false" required><div id="access" hidden><label for="local-token">Dostęp lokalny</label><input id="local-token" type="password" autocomplete="off" placeholder="Token lokalnego demo"></div><button id="login-submit" type="submit">Zaloguj →</button><div id="login-msg" role="status" aria-live="polite"></div></form></div>
+<div id="login-layer"><form class="login-card" id="login-form"><div class="brand">bitxbit / ANS</div><h2>Your custodian</h2><p>Enter your space.</p><label for="custodian">ANS word</label><input id="custodian" value="pawel.ans" placeholder="e.g. pawel.ans" autocapitalize="none" autocomplete="username" spellcheck="false" required><div id="access" hidden><label for="local-token">Local access</label><input id="local-token" type="password" autocomplete="off" placeholder="Local demo token"></div><button id="login-submit" type="submit">Log in →</button><div id="login-msg" role="status" aria-live="polite"></div></form></div>
 <script>
 window.sceneIntro={phase:'playing',speed:1};
 window.showSceneLogin=()=>{const boot=document.getElementById('boot');if(boot)boot.remove();document.body.classList.add('frozen');document.getElementById('login-layer').classList.add('visible');document.getElementById('enter').hidden=true;window.sceneIntro.phase='frozen';window.sceneIntro.speed=0};
-document.getElementById('login-form').onsubmit=async e=>{e.preventDefault();const $=id=>document.getElementById(id);$('login-submit').disabled=true;$('login-msg').textContent='Sprawdzam custodian…';try{const r=await fetch('/api/do',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op:'custodian_login',custodian:$('custodian').value})}).then(r=>r.json());if(!r.ok)throw Error(r.error||'Logowanie nie powiodło się');location.href=r.routes[1];}catch(err){$('login-msg').textContent=err.message}finally{$('login-submit').disabled=false}};
+document.getElementById('login-form').onsubmit=async e=>{e.preventDefault();const $=id=>document.getElementById(id);$('login-submit').disabled=true;$('login-msg').textContent='Checking custodian…';try{const r=await fetch('/api/do',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({op:'custodian_login',custodian:$('custodian').value})}).then(r=>r.json());if(!r.ok)throw Error(r.error||'Login failed');location.href=r.routes[1];}catch(err){$('login-msg').textContent=err.message}finally{$('login-submit').disabled=false}};
 // Also reveal the login if WebGL or the local Three.js module is unavailable.
 setTimeout(()=>{if(window.sceneIntro.phase==='playing')window.showSceneLogin()},13000);
 </script><script type="importmap">{"imports":{"three":"/scene/three.module.js"}}</script>

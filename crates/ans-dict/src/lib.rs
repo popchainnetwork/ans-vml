@@ -3,6 +3,7 @@
 //! ANS dictionary core. A crystal is a set of leaves; its index is a SHA3-256
 //! merkle root over canonically serialized, sorted leaves. Integrity only:
 //! a root proves the leaves are unchanged, not that they are linguistically correct.
+pub mod author;
 pub mod book;
 pub mod exec;
 pub mod forms;
@@ -91,6 +92,14 @@ impl Crystal {
         let declared = o.get("root").and_then(Value::as_str).ok_or_else(|| anyhow!("root missing"))?;
         let root = merkle_root(&leaves)?;
         if root != declared { bail!("merkle root mismatch: declared {declared}, recomputed {root}"); }
+        let schema = if kind == CrystalKind::Word { WORD_SCHEMA } else { CHAR_SCHEMA };
+        let identities: Vec<_> = leaves.iter().filter(|l| l.get("kind") == Some("identity")).collect();
+        if identities.len() != 1 || identities[0].get("value") != Some(id.as_str()) {
+            bail!("crystal identity mismatch: wrapper must match one root-bound identity leaf");
+        }
+        if identities[0].get("schema").is_some_and(|bound| bound != schema) {
+            bail!("crystal schema mismatch with root-bound identity");
+        }
         let meta = o.iter().filter(|(k, _)| !matches!(k.as_str(), "leaves" | "root")).map(|(k, v)| (k.clone(), v.clone())).collect();
         Ok(Crystal { kind, id, root, leaves, meta })
     }

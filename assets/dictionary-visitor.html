@@ -1,0 +1,184 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#03020a">
+<meta name="description" content="Genesis is an experimental native minted dictionary in Rust. Browse signed entries, check a proof against an expected key, and download the Linux package.">
+<title>Genesis · the native minted dictionary (experimental)</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/favicon.svg">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<canvas id="px" class="px" aria-hidden="true"></canvas>
+<a class="skip" href="#main">Skip to content</a>
+<p class="notice" role="note"><strong>Experimental</strong> · not audited · not for production use · local read-only demo</p>
+<header class="top">
+  <div class="wrap top-row">
+    <a class="brand" href="#top" aria-label="Genesis, back to top"><svg class="brand-mark" viewBox="0 0 16 16" shape-rendering="crispEdges" aria-hidden="true" focusable="false"><rect x="4" y="2" width="8" height="1" fill="#00f0ff"/><rect x="3" y="3" width="1" height="1" fill="#00f0ff"/><rect x="4" y="3" width="2" height="1" fill="#cffaff"/><rect x="6" y="3" width="4" height="1" fill="#00f0ff"/><rect x="10" y="3" width="2" height="1" fill="#ff3df0"/><rect x="12" y="3" width="1" height="1" fill="#00f0ff"/><rect x="2" y="4" width="1" height="1" fill="#00f0ff"/><rect x="3" y="4" width="2" height="1" fill="#cffaff"/><rect x="5" y="4" width="5" height="1" fill="#00f0ff"/><rect x="10" y="4" width="3" height="1" fill="#ff3df0"/><rect x="13" y="4" width="1" height="1" fill="#00f0ff"/><rect x="1" y="5" width="1" height="1" fill="#00f0ff"/><rect x="2" y="5" width="1" height="1" fill="#cffaff"/><rect x="3" y="5" width="7" height="1" fill="#00f0ff"/><rect x="10" y="5" width="3" height="1" fill="#ff3df0"/><rect x="13" y="5" width="1" height="1" fill="#9a5cff"/><rect x="14" y="5" width="1" height="1" fill="#00f0ff"/><rect x="0" y="6" width="16" height="1" fill="#00f0ff"/><rect x="1" y="7" width="1" height="1" fill="#0b6a7a"/><rect x="2" y="7" width="6" height="1" fill="#00f0ff"/><rect x="8" y="7" width="4" height="1" fill="#ff3df0"/><rect x="12" y="7" width="2" height="1" fill="#9a5cff"/><rect x="14" y="7" width="1" height="1" fill="#0b6a7a"/><rect x="2" y="8" width="1" height="1" fill="#0b6a7a"/><rect x="3" y="8" width="5" height="1" fill="#00f0ff"/><rect x="8" y="8" width="3" height="1" fill="#ff3df0"/><rect x="11" y="8" width="2" height="1" fill="#9a5cff"/><rect x="13" y="8" width="1" height="1" fill="#0b6a7a"/><rect x="3" y="9" width="1" height="1" fill="#0b6a7a"/><rect x="4" y="9" width="4" height="1" fill="#00f0ff"/><rect x="8" y="9" width="2" height="1" fill="#ff3df0"/><rect x="10" y="9" width="2" height="1" fill="#9a5cff"/><rect x="12" y="9" width="1" height="1" fill="#0b6a7a"/><rect x="4" y="10" width="1" height="1" fill="#0b6a7a"/><rect x="5" y="10" width="3" height="1" fill="#00f0ff"/><rect x="8" y="10" width="1" height="1" fill="#ff3df0"/><rect x="9" y="10" width="2" height="1" fill="#9a5cff"/><rect x="11" y="10" width="1" height="1" fill="#0b6a7a"/><rect x="5" y="11" width="1" height="1" fill="#0b6a7a"/><rect x="6" y="11" width="2" height="1" fill="#00f0ff"/><rect x="8" y="11" width="1" height="1" fill="#ff3df0"/><rect x="9" y="11" width="1" height="1" fill="#9a5cff"/><rect x="10" y="11" width="1" height="1" fill="#0b6a7a"/><rect x="6" y="12" width="1" height="1" fill="#0b6a7a"/><rect x="7" y="12" width="1" height="1" fill="#00f0ff"/><rect x="8" y="12" width="1" height="1" fill="#9a5cff"/><rect x="9" y="12" width="1" height="1" fill="#0b6a7a"/><rect x="7" y="13" width="2" height="1" fill="#0b6a7a"/></svg><span class="brand-text">Genesis<small>native dictionary</small></span></a>
+    <nav class="nav" aria-label="Sections">
+      <a href="#explore">Explore</a><a href="#verify">Verify</a><a href="#download">Download</a><a href="#limits">Limits</a>
+    </nav>
+  </div>
+</header>
+<main id="main">
+  <section class="hero wrap" id="top" aria-labelledby="hero-title">
+    <div class="hero-copy">
+    <p class="eyebrow">// Genesis · Rust · XMSSMT / WOTS+ · PopChain</p>
+    <h1 id="hero-title">A dictionary where every entry is <em>minted and signed.</em></h1>
+    <p class="lede">Genesis is a native minted dictionary written in Rust. Words and the characters they are built from go through <strong>draft → validate → mint</strong>. Each mint is a native event inside a PopChain block, signed with hash-based XMSSMT / WOTS+ signatures. Anyone can check a public proof offline against the signer key they expect.</p>
+    <div class="actions">
+      <a class="btn primary" href="#explore">Explore entries</a>
+      <a class="btn" href="#verify">Verify a proof</a>
+    </div>
+    </div>
+    <aside class="hero-side" aria-label="Served proof at a glance">
+      <pre id="boot" class="boot" aria-hidden="true"></pre>
+      <div class="status" id="status" aria-live="polite">
+        <span class="status-dot" id="status-dot" aria-hidden="true"></span>
+        <div><strong id="status-title">Loading the served proof…</strong><span id="status-detail" class="muted"></span></div>
+      </div>
+      <div id="glance" class="glance"></div>
+      <p class="muted small">Characters are minted first. The word’s mint names each of them, so the word’s proof carries them too.</p>
+    </aside>
+  </section>
+
+  <section class="section wrap" id="how" aria-labelledby="how-title">
+    <div class="section-head">
+      <p class="eyebrow">// 01 · Lifecycle</p>
+      <h2 id="how-title">From draft to proof</h2>
+      <p class="muted">The owner runs these steps with the <code>ans dictionary</code> CLI. Every step is a signed journal event, and retries with the same operation ID never mint twice.</p>
+    </div>
+    <ol class="steps">
+      <li><span class="step-n">1</span><h3>Draft</h3><p>Author a word or character. Its text and metadata are hashed into a content-addressed root (SHA3 Merkle).</p></li>
+      <li><span class="step-n">2</span><h3>Validate</h3><p>Rules are checked: a word may only use characters that are already minted.</p></li>
+      <li><span class="step-n">3</span><h3>Mint</h3><p>A signed native mint event is written as the payload of a PopChain block.</p></li>
+      <li><span class="step-n">4</span><h3>Inspect &amp; prove</h3><p>Export a proof with its dependency closure. Anyone can verify it offline against an expected key.</p></li>
+    </ol>
+  </section>
+
+  <section class="section wrap" id="explore" aria-labelledby="explore-title">
+    <div class="section-head">
+      <p class="eyebrow">// 02 · Explore</p>
+      <h2 id="explore-title">Minted entries in this proof</h2>
+      <p class="muted">Words and characters from one public proof. The server verified it at start-up against a pinned key. Draft or imported content is not shown as minted.</p>
+    </div>
+    <div id="error" class="alert bad" role="alert" hidden></div>
+    <div class="explorer">
+      <div class="catalog card">
+        <label for="search">Find a word, character or root</label>
+        <input id="search" type="search" placeholder="e.g. oak, o, or a root" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search">
+        <p id="catalog-status" class="muted small" role="status">Loading…</p>
+        <ul id="entries" class="entries"></ul>
+      </div>
+      <article id="entry" class="entry card" aria-live="polite" aria-busy="true" tabindex="-1">
+        <p class="muted">Choose an entry to see its evidence.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="section wrap" id="verify" aria-labelledby="verify-title">
+    <div class="section-head">
+      <p class="eyebrow">// 03 · Verify</p>
+      <h2 id="verify-title">Check a proof yourself</h2>
+      <p class="muted">Paste or upload a Genesis proof (JSON) and the public key you expect it to be signed by. The server checks every signature, the block payload commitments and the dependency closure. Nothing is stored and nothing is signed.</p>
+    </div>
+    <div class="card verify">
+      <div class="field">
+        <div class="field-head"><label for="proof-text">Proof JSON</label><span id="proof-meta" class="muted small"></span></div>
+        <textarea id="proof-text" rows="5" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="Paste a proof here, upload a file, or use the served proof"></textarea>
+        <div class="row">
+          <label class="btn file" for="proof-file">Upload file</label>
+          <input id="proof-file" class="visually-hidden" type="file" accept=".json,application/json">
+          <button id="use-served" class="btn" type="button">Use served proof</button>
+          <button id="clear-proof" class="btn ghost" type="button" hidden>Clear</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="key">Expected signer public key (hex)</label>
+        <textarea id="key" class="mono" rows="3" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="Public key you trust, from a source other than the proof"></textarea>
+        <div class="row">
+          <button id="use-demo-key" class="btn" type="button">Use pinned key</button>
+          <button id="use-wrong-key" class="btn ghost" type="button">Try a wrong key</button>
+        </div>
+      </div>
+      <button id="verify-btn" class="btn primary wide" type="button">Verify proof</button>
+      <div id="verify-result" class="result" role="status" aria-live="polite" hidden></div>
+    </div>
+    <details class="card plain">
+      <summary>Same check on the command line</summary>
+      <div class="code"><pre><code id="cli-verify">./bin/ans dictionary verify demo/oak.proof.json --expect-key "$EXPECTED_KEY"</code></pre><button class="btn copy" type="button" data-copy="cli-verify">Copy</button></div>
+      <p class="muted small">Get the key from a source you trust. A key copied from the proof itself proves nothing.</p>
+    </details>
+  </section>
+
+  <section class="section wrap" id="download" aria-labelledby="download-title">
+    <div class="section-head">
+      <p class="eyebrow">// 04 · Download</p>
+      <h2 id="download-title">Experimental package</h2>
+      <p class="muted">Linux x86_64 only. Contains the release binary, the exact source tree, the <code>oak</code> demo proof with its public demo key, and the demo scripts. No installer and no sudo.</p>
+    </div>
+    <div class="card pkg">
+      <dl class="facts">
+        <div><dt>File</dt><dd id="pkg-name" class="break">ans-vml-experimental-linux-x86_64-b859a2f.tar.gz</dd></div>
+        <div><dt>Size</dt><dd id="pkg-size">—</dd></div>
+        <div><dt>Platform</dt><dd>Linux x86_64</dd></div>
+        <div class="span"><dt>SHA-256</dt><dd><code id="pkg-sha" class="break">79bac7a3e770f6b12a9af217e619a9001a5714cfb14f0fe6e77d4b7963a7d3e5</code></dd></div>
+      </dl>
+      <div class="row">
+        <a id="pkg-download" class="btn primary" href="/download/package.tar.gz" hidden>Download .tar.gz</a>
+        <button class="btn" type="button" data-copy="pkg-sha">Copy SHA-256</button>
+      </div>
+      <p id="pkg-note" class="muted small">Checking whether this server offers the file…</p>
+    </div>
+    <h3 class="sub">Quick start</h3>
+    <ol class="quick">
+      <li><p>Check the download</p><div class="code"><pre><code id="qs-1">echo "79bac7a3e770f6b12a9af217e619a9001a5714cfb14f0fe6e77d4b7963a7d3e5  ans-vml-experimental-linux-x86_64-b859a2f.tar.gz" | sha256sum -c -</code></pre><button class="btn copy" type="button" data-copy="qs-1">Copy</button></div></li>
+      <li><p>Unpack it</p><div class="code"><pre><code id="qs-2">tar -xzf ans-vml-experimental-linux-x86_64-b859a2f.tar.gz
+cd ans-vml-experimental-linux-x86_64-b859a2f</code></pre><button class="btn copy" type="button" data-copy="qs-2">Copy</button></div></li>
+      <li><p>Verify the bundled proof (right key passes, wrong key fails)</p><div class="code"><pre><code id="qs-3">./demo/verify-public-proof.sh</code></pre><button class="btn copy" type="button" data-copy="qs-3">Copy</button></div></li>
+      <li><p>Run the full local demo (new throwaway identity in a temp folder)</p><div class="code"><pre><code id="qs-4">ANS=$PWD/bin/ans ./demo/run-full-demo.sh</code></pre><button class="btn copy" type="button" data-copy="qs-4">Copy</button></div></li>
+    </ol>
+  </section>
+
+  <section class="section wrap" id="limits" aria-labelledby="limits-title">
+    <div class="section-head">
+      <p class="eyebrow">// 05 · Honest limits</p>
+      <h2 id="limits-title">What this is, and what it is not</h2>
+    </div>
+    <div class="two">
+      <div class="card">
+        <h3>Works today</h3>
+        <ul class="ticks">
+          <li>Native Rust dictionary with draft, validate, mint and inspect</li>
+          <li>XMSSMT / WOTS+ signed mint events inside PopChain blocks</li>
+          <li>Repeating an operation never mints twice</li>
+          <li>Word proofs carry the characters they depend on</li>
+          <li>Offline proof check: a wrong key or an edited proof is rejected</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>Not claimed, not done</h3>
+        <ul class="crosses">
+          <li>Experimental and not audited. Not for production use.</li>
+          <li>A signature proves who signed the bytes. It does not prove a meaning is correct.</li>
+          <li>One local signer. No consensus, no global names, no live network state.</li>
+          <li>Package is Linux x86_64 only.</li>
+          <li>Some older CLI commands (meaning, delegate, revoke, run) are not moved into the dictionary lifecycle yet.</li>
+          <li>This page is read-only. It cannot draft, mint or sign anything.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</main>
+<footer class="foot">
+  <div class="wrap foot-row"><span>Genesis / ANS VML</span><span>Apache-2.0 core · Rust</span><span>Local experimental demo · read-only</span></div>
+</footer>
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

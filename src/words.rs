@@ -44,7 +44,21 @@ fn journal(root: &Path, actor: &str) -> Result<Vec<Value>> {
 fn find(b: &Book, w: &str) -> Result<Crystal> {
     let f = format!("{w}.crystal.json");
     if ans_dict::book::valid_file_name(&f) { if let Ok(c) = b.get(&f) { return Ok(c); } }
+    // Single Unicode scalar: also resolve letter crystals stored as uXXXX.crystal.json.
+    if w.chars().count() == 1 {
+        if let Some(ch) = w.chars().next() {
+            let letter = format!("u{:04x}.crystal.json", ch as u32);
+            if let Ok(c) = b.get(&letter) { return Ok(c); }
+        }
+    }
     b.lookup(w)
+}
+/// Network profile of the signed journal the command wrote to.
+fn signed_network(root: &Path, actor: &str) -> String {
+    journal(root, actor)
+        .and_then(|j| crate::network::of_journal(&j))
+        .map(|n| n.as_str().to_owned())
+        .unwrap_or_else(|e| format!("unknown: {e}"))
 }
 fn valid(e: &Value) -> bool { exploit::event_valid(e) }
 pub const ALPHABET: &str = "abcdefghijklmnopqrstuvwxyząćęłńóśźż";
@@ -57,14 +71,9 @@ fn letter_lookup<'a>(root: &Path, j: &'a [Value]) -> impl Fn(char) -> Option<(St
         rule::mint_proof(&c.root, j, &p, &valid).map(|e| (c.root.clone(), e["seq"].clone()))
     }
 }
-fn mint_one(root: &Path, actor: &str, d: &Path, c: &Crystal) -> Result<Value> {
-    let j = exploit::journal(actor, d)?;
-    if let Some(e) = rule::mint_proof(&c.root, &j, &[], &valid) { return Ok(json!({"word":c.id,"root":c.root,"block":e["seq"],"layer":e["body"]["data"]["layer"],"already":true})); }
-    let k = rule::kind(c)?;
-    let letters = rule::letters_of(c, &letter_lookup(root, &j))?; // layer 2 needs minted letters
-    let layer = if c.kind == ans_dict::CrystalKind::Letter { 1 } else { 2 };
-    let e = exploit::record_local(actor, d, "word.mint", json!({"layer":layer,"word":c.id,"root":c.root,"file":c.file_name(),"kind":format!("{k:?}"),"letters":letters,"chain":"local genesis (custodian journal), not mainnet"}))?;
-    Ok(json!({"layer":layer,"word":c.id,"root":c.root,"block":e["seq"],"xmss_idx":e["xmss"]["idx"]}))
+fn mint_one(root: &Path, actor: &str, _d: &Path, c: &Crystal) -> Result<Value> {
+    // Single ledger: legacy mint CLI adopts the crystal through the typed dictionary lifecycle.
+    crate::dictionary::adopt_book_crystal(root, actor, c)
 }
 
 pub fn handle(cmd: &str, args: &[String], root: &Path, actor: &str) -> Result<Option<Value>> {
@@ -81,7 +90,7 @@ pub fn handle(cmd: &str, args: &[String], root: &Path, actor: &str) -> Result<Op
         }
         ("book", Some("add")) => {
             let (f, c) = book(root)?.add_text(&std::fs::read_to_string(arg(2, "ans book add <crystal.json>")?)?)?;
-            json!({"ok":true,"file":f,"root":c.root,"minted":false,"next":format!("ans mint {}", c.id)})
+            json!({"ok":true,"file":f,"root":c.root,"minted":false,"next":format!("ans --as OWNER mint {} (dictionary lifecycle)", c.id)})
         }
         ("book", Some("import-kaikki")) => {
             let (file, w, lang) = (arg(2, "ans book import-kaikki <file.jsonl> <word> <lang> --ucd DIR")?, arg(3, "word")?, arg(4, "lang")?);
@@ -92,8 +101,7 @@ pub fn handle(cmd: &str, args: &[String], root: &Path, actor: &str) -> Result<Op
             json!({"ok":true,"file":b.add(&c)?,"root":c.root,"leaves":c.leaves.len(),"letters":letters.iter().map(|l| json!({"char":l.id,"root":l.root})).collect::<Vec<_>>()})
         }
         ("book", Some("list")) => {
-            let j = journal(root, actor)?; let p = peer_proofs(root);
-            json!({"node":node_id(root)?,"crystals":book(root)?.list()?.into_iter().map(|(f, c)| json!({"file":f,"id":c.id,"root":c.root,"leaves":c.leaves.len(),"minted_block":rule::mint_proof(&c.root,&j,&p,&valid).map(|e| e["seq"].clone())})).collect::<Vec<_>>()})
+            crate::dictionary_read::legacy_list(root,actor)?
         }
         ("book", Some("serve")) => {
             let port: u16 = flag("--port").ok_or_else(|| anyhow!("ans book serve --port N"))?.parse()?;
@@ -117,7 +125,7 @@ pub fn handle(cmd: &str, args: &[String], root: &Path, actor: &str) -> Result<Op
             let b = book(root)?;
             let mut res = vec![];
             for ch in ALPHABET.chars() { let l = ucd.letter(ch)?; b.add(&l)?; res.push(mint_one(root, actor, &d, &l)?); }
-            json!({"ok":true,"layer":1,"alphabet":ALPHABET,"minted":res,"network":"none: local journal only"})
+            json!({"ok":true,"layer":1,"service":"dictionary","lifecycle_adapter":"adopt_book_crystal","alphabet":ALPHABET,"minted":res,"network":signed_network(root, actor),"scope":"local journal only"})
         }
         ("mint", _) => {
             let d = cdir(root, actor)?;
@@ -126,33 +134,52 @@ pub fn handle(cmd: &str, args: &[String], root: &Path, actor: &str) -> Result<Op
             targets.sort_by_key(|c| c.kind != ans_dict::CrystalKind::Letter); // layer 1 before layer 2
             let mut res = vec![];
             for c in targets { res.push(match mint_one(root, actor, &d, &c) { Ok(v) => v, Err(e) => json!({"word":c.id,"root":c.root,"refused":e.to_string()}) }); }
-            json!({"ok":true,"custodian":actor,"minted":res,"network":"none: local journal only","private_key":"never printed"})
+            json!({"ok":true,"custodian":actor,"service":"dictionary","lifecycle_adapter":"adopt_book_crystal","minted":res,"network":signed_network(root, actor),"scope":"local journal only","private_key":"never printed"})
         }
         ("mint-meaning", _) => {
             let usage = "ans mint-meaning <word> <lang> <text>";
-            let d = cdir(root, actor)?;
+            cdir(root, actor)?;
             let c = find(&book(root)?, &arg(1, usage)?)?;
-            let (lang, text) = (arg(2, usage)?, arg(3, usage)?);
-            let j = exploit::journal(actor, &d)?;
-            let p = peer_proofs(root);
-            let wm = rule::mint_proof(&c.root, &j, &p, &valid).ok_or_else(|| anyhow!("refused: word {} is not minted (layer 2) — a meaning must reference a minted word", c.id))?;
+            let (lang, text) = (arg(2, usage)?, args[3.min(args.len())..].join(" "));
+            if text.is_empty() { bail!("usage: {usage}"); }
             if c.kind == ans_dict::CrystalKind::Letter { bail!("meanings attach to words, not letters"); }
-            let e = exploit::record_local(actor, &d, "word.meaning", json!({"layer":3,"word":c.id,"word_root":c.root,"word_block":wm["seq"],"lang":lang,"text":text,"text_sha3":hex::encode(<sha3::Sha3_256 as sha3::Digest>::digest(text.as_bytes()))}))?;
-            json!({"ok":true,"layer":3,"word":c.id,"word_block":wm["seq"],"block":e["seq"]})
+            let command = crate::dictionary::Command::Meaning { root: crate::dictionary::ContentRoot(c.root.clone()), lang: lang.clone(), text };
+            let mut v = crate::dictionary::legacy_annotation(root, actor, &c, command)?;
+            v["layer"] = json!(3);
+            v["lang"] = json!(lang);
+            v
         }
         ("delegate", _) | ("revoke", _) => {
-            let d = cdir(root, actor)?;
-            let c = find(&book(root)?, &arg(1, "ans delegate|revoke <word> <scope>")?)?;
-            let scope = arg(2, "ans delegate|revoke <word> <scope>")?;
-            let e = exploit::record_local(actor, &d, &format!("word.{cmd}"), json!({"word":c.id,"root":c.root,"scope":scope}))?;
-            json!({"ok":true,"action":format!("word.{cmd}"),"word":c.id,"scope":scope,"block":e["seq"]})
+            let usage = "ans delegate|revoke <word> <scope>";
+            cdir(root, actor)?;
+            let c = find(&book(root)?, &arg(1, usage)?)?;
+            let scope = arg(2, usage)?;
+            let target = crate::dictionary::ContentRoot(c.root.clone());
+            let command = if cmd == "delegate" {
+                crate::dictionary::Command::Delegate { root: target, scope: scope.clone() }
+            } else {
+                crate::dictionary::Command::Revoke { root: target, scope: scope.clone() }
+            };
+            let mut v = crate::dictionary::legacy_annotation(root, actor, &c, command)?;
+            v["scope"] = json!(scope);
+            v
         }
         ("run", _) => {
+            // Execution is routed through dictionary rules: strict-replayed minted lifecycle,
+            // an active dictionary delegation for the scope, then the word rule. Fails closed.
             let c = find(&book(root)?, &arg(1, "ans run <word> [--plan] [input]")?)?;
             let scope = flag("--scope").unwrap_or_else(|| "run".into());
             let j = journal(root, actor)?;
-            let mut v = rule::check(&c, rule::Use::Run { scope: &scope }, &j, &peer_proofs(root), &valid, &letter_lookup(root, &j));
+            let lifecycle = crate::dictionary_read::show(root, actor, &c.root, None).ok().and_then(|i| i.lifecycle);
+            if lifecycle != Some(crate::dictionary::State::Minted) {
+                bail!("refused: {} is not minted: no minted dictionary lifecycle; execution requires dictionary rules", c.id);
+            }
+            if !crate::dictionary::active_grants(&j).contains(&(c.root.clone(), scope.clone())) {
+                bail!("refused: no active dictionary delegation for scope {scope}; run `ans --as OWNER delegate {} {scope}`", c.id);
+            }
+            let mut v = rule::check(&c, rule::Use::Run { scope: &scope }, &j, &[], &valid, &letter_lookup(root, &j));
             if v["accept"] != true { bail!("refused: {}", v["reason"].as_str().unwrap_or("")); }
+            v["service"] = json!("dictionary");
             if args.iter().any(|a| a == "--plan") { v["dry_run"] = json!(true); return Ok(Some(v)); }
             let input = args.iter().skip(2).find(|a| !a.starts_with("--") && Some(a.as_str()) != Some(scope.as_str())).cloned().unwrap_or_default();
             v["output"] = json!(exec::run_builtin(v["resolved"]["function"].as_str().unwrap(), &input)?);
@@ -190,9 +217,10 @@ fn origins(root: &Path) -> std::collections::HashMap<String, Value> {
 pub fn mcp_tools() -> Vec<Value> {
     let w = json!({"type":"object","properties":{"word":{"type":"string"}},"required":["word"]});
     vec![
+        json!({"name":"dictionary_propose","description":"Prepare a typed dictionary lifecycle request for explicit offline custodian approval; never signs or executes","inputSchema":{"type":"object","properties":{"op_id":{"type":"string"},"command":{"type":"object"}},"required":["op_id","command"]}}),
         json!({"name":"word","description":"Look up a word crystal in the local book (any translation/form, diacritic-insensitive); root is re-verified","inputSchema":w}),
-        json!({"name":"list_words","description":"List crystals in the local book with their mint block (null = unminted)","inputSchema":{"type":"object","properties":{}}}),
-        json!({"name":"mint_request","description":"Propose minting a word: runs the rule dry and queues a request. Does NOT mint; the custodian must run `ans mint`","inputSchema":w}),
+        json!({"name":"list_words","description":"Read public dictionary content with provenance; mint block is present only for a verified lifecycle native mint, null otherwise","inputSchema":{"type":"object","properties":{}}}),
+        json!({"name":"mint_request","description":"Propose minting a word: runs the rule dry and queues a request. Does NOT mint or sign. Custodian approves with `ans mint`, which adopts the book crystal through the typed dictionary draft→validate→mint lifecycle","inputSchema":w}),
         json!({"name":"run_plan","description":"Dry-run an executable word: rule check (minted, letters minted, delegation) and pinned package/hash resolution","inputSchema":w}),
         json!({"name":"run","description":"Run a minted, rule-accepted, delegated executable word (built-in functions only)","inputSchema":{"type":"object","properties":{"word":{"type":"string"},"input":{"type":"string"}},"required":["word"]}}),
     ]
@@ -202,8 +230,8 @@ pub fn mcp_call(name: &str, a: &Value, root: &Path, actor: &str) -> Option<Resul
     let w = a["word"].as_str().unwrap_or("").to_string();
     let argv = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     Some(match name {
-        "word" => book(root).and_then(|b| find(&b, &w)).map(|c| json!({"word":c.id,"root":c.root,"index":c.index(),"leaves":c.leaves.len(),
-            "senses":c.of_kind("sense").take(8).map(|l| l.to_value()).collect::<Vec<_>>(),"translations":c.of_kind("translation").take(20).map(|l| l.to_value()).collect::<Vec<_>>(),"exec":c.of_kind("exec").map(|l| l.to_value()).collect::<Vec<_>>()})),
+        "dictionary_propose" => crate::dictionary::proposal(a.clone()),
+        "word" => crate::dictionary_read::show(root,actor,&w,None).and_then(|record|crate::dictionary_read::summary(&record,None,20)),
         "list_words" => handle("book", &argv(&["book", "list"]), root, actor).map(Option::unwrap),
         "run_plan" => handle("run", &argv(&["run", &w, "--plan"]), root, actor).map(Option::unwrap),
         "run" => handle("run", &argv(&["run", &w, a["input"].as_str().unwrap_or("")]), root, actor).map(Option::unwrap),
@@ -219,7 +247,7 @@ pub fn mcp_call(name: &str, a: &Value, root: &Path, actor: &str) -> Option<Resul
             let req = json!({"word":c.id,"root":c.root,"requested_by":"mcp client (unsigned)","time_unix":sync::now(),"ready":ready,
                 "kind":kind_s,"blocking":blocking,"already_minted_block":already});
             if ready { let d = root.join("mint-requests"); std::fs::create_dir_all(&d)?; std::fs::write(d.join(format!("{}.json", c.root)), req.to_string())?; }
-            Ok(json!({"request":req,"minted":false,"next":format!("custodian approves with: ans mint {}", c.id)}))
+            Ok(json!({"request":req,"minted":false,"signed":false,"service":"dictionary","next":format!("custodian approves with: ans --as OWNER mint {} (routes through dictionary lifecycle)", c.id)}))
         })(),
         _ => return None,
     })

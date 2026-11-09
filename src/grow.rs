@@ -174,7 +174,7 @@ fn ensure_runtime(root: &Path, c: &Value) -> Result<Option<u32>> {
         .keys()
         .collect();
     if words.is_empty() {
-        bail!("Najpierw zasadź ziarno: ans init <word>")
+        bail!("Initialize a custodian first: ans init <word>")
     }
     let ready = || {
         words
@@ -296,7 +296,7 @@ pub fn run(root: &Path, args: &[String]) -> Result<Value> {
         bail!("Replication goal unmet: add sufficient localhost placements or lower replicas")
     }
     if !root.join("config.json").exists() {
-        bail!("Najpierw zasadź ziarno: ans init <word>")
+        bail!("Initialize a custodian first: ans init <word>")
     }
     super::exploit::configure(super::mappings(&c));
     let started = ensure_runtime(root, &c)?;

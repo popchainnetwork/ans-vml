@@ -11,6 +11,10 @@ mod pq;
 mod word;
 mod rule;
 mod words;
+mod dictionary;
+mod dictionary_read;
+mod dictionary_web;
+mod network;
 use anyhow::{anyhow, bail, Result};
 use rand::RngCore;
 use serde_json::{json, Value};
@@ -51,7 +55,7 @@ fn normalize(s: &str) -> Result<String> {
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
     {
-        bail!("Słowo: 3–63 małe litery, cyfry i myślnik")
+        bail!("Owner name must contain 3–63 lowercase ASCII letters, digits, or hyphens")
     };
     Ok(w.into())
 }
@@ -342,7 +346,7 @@ fn web_connection(mut stream: TcpStream, web: Arc<Web>) -> Result<()> {
             return json_response(
                 &mut stream,
                 403,
-                json!({"ok":false,"error":"Najpierw ans init <słowo>"}),
+                json!({"ok":false,"error":"Run ans init <word> first"}),
                 None,
             );
         }
@@ -370,7 +374,7 @@ fn web_connection(mut stream: TcpStream, web: Arc<Web>) -> Result<()> {
             return json_response(
                 &mut stream,
                 401,
-                json!({"ok":false,"error":"Zaloguj się"}),
+                json!({"ok":false,"error":"Log in first"}),
                 None,
             );
         };
@@ -383,7 +387,7 @@ fn web_connection(mut stream: TcpStream, web: Arc<Web>) -> Result<()> {
             return json_response(
                 &mut stream,
                 403,
-                json!({"ok":false,"error":"Ta sesja ma innego custodiana"}),
+                json!({"ok":false,"error":"This session belongs to a different custodian"}),
                 None,
             );
         }
@@ -396,7 +400,7 @@ fn web_connection(mut stream: TcpStream, web: Arc<Web>) -> Result<()> {
 }
 fn up(root: &Path, c: &Value) -> Result<()> {
     if c["custodians"].as_object().unwrap().is_empty() {
-        bail!("Najpierw ans init <słowo>")
+        bail!("Run ans init <word> first")
     };
     let web_port = c["web_port"].as_u64().unwrap() as u16;
     let listener = TcpListener::bind(("127.0.0.1", web_port))?;
@@ -518,12 +522,20 @@ fn attest(c: &Value) -> Result<Value> {
         json!({"ok":true,"anchor":417696,"KAT":{"WOTS_reference":true,"XMSS_reference":true,"XMSSMT_reference_signatures":true,"tampered_message_rejected":true},"PQ_schemes":pq::schemes(),"GEN002":reference,"golden_vector_id":hex::encode(Sha3_256::digest(&g)),"chains":chains,"scope":"local cryptographic/kernel checks, not a consensus or product certification"}),
     )
 }
+const GLOBAL_FLAGS: [&str; 5] = ["--data", "--as", "--network", "--confirm-network", "--custodian-key"];
 fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut root = std::env::var("ANS_HOME")
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir()?.join("ans-data"));
     let mut actor = String::new();
+    // Global flags may appear once. A repeated flag would leave a leftover copy in the
+    // positional arguments (e.g. signed into meaning text), so it is refused outright.
+    for flag in GLOBAL_FLAGS {
+        if args.iter().filter(|a| a.as_str() == flag).count() > 1 {
+            bail!("Global flag {flag} given more than once; refusing an ambiguous command");
+        }
+    }
     for flag in ["--data", "--as"] {
         if let Some(i) = args.iter().position(|s| s == flag) {
             let value = args
@@ -538,10 +550,43 @@ fn run() -> Result<()> {
             args.drain(i..=i + 1);
         }
     }
+    let mut network_flags: BTreeMap<&str, String> = BTreeMap::new();
+    for flag in ["--network", "--confirm-network", "--custodian-key"] {
+        if let Some(i) = args.iter().position(|s| s == flag) {
+            let value = args.get(i + 1).ok_or(anyhow!("Missing flag value"))?.clone();
+            network_flags.insert(flag, value);
+            args.drain(i..=i + 1);
+        }
+    }
+    let selected = network_flags.get("--network").map(|v| network::Network::parse(v)).transpose()?;
+    let confirmed = network_flags.get("--confirm-network").map(|v| network::Network::parse(v)).transpose()?;
+    if confirmed.is_some() && confirmed != selected {
+        bail!("--confirm-network must repeat the exact --network value");
+    }
+    network::set_operator(selected, confirmed, network_flags.get("--custodian-key").map(PathBuf::from));
     let cmd = args.first().map(String::as_str).unwrap_or("help");
-    if cmd == "help" || cmd == "--help" {
-        println!("ans init|install <word> | grow --plan|--apply [--hosts hosts.toml] | up | status | chat [to text] | skill list|add|grant|revoke|run | node [resolve /word/channel] | book resolve <word> | attest | word <slowo> [--lang pl|en|nl | --crystal] | boot --plan | book seed|add|list|import-kaikki|serve --port N | mint <word>|--all | delegate|revoke <word> <scope> | run <word> [--plan] [input] | sync http://127.0.0.1:PORT | licenses | inventory\nGlobal: --data DIR --as WORD. LOCAL DEMO; Apache-2.0 core; paid modules excluded.");
+    if cmd == "network" {
+        out(network_cli(&root, &actor, &args[1..])?);
         return Ok(());
+    }
+    if (cmd == "init" || cmd == "install") && selected.is_some_and(|n| n.protected()) {
+        bail!("Protected profiles are initialized only with `ans --network N --confirm-network N --custodian-key PATH network init WORD`");
+    }
+    if cmd == "help" || cmd == "--help" {
+        println!("ans init|install <word> | grow --plan|--apply [--hosts hosts.toml] | up | status | chat [to text] | skill list|add|grant|revoke|run | node [resolve /word/channel] | book resolve <word> | attest | word <slowo> [--lang pl|en|nl | --crystal] | boot --plan | book seed|add|list|import-kaikki|serve --port N | mint <word>|--all | delegate|revoke <word> <scope> | run <word> [--plan] [input] | sync http://127.0.0.1:PORT | licenses | inventory\nDictionary: dictionary --help. Read-only list/show/export/verify/serve; owner write/draft/validate/mint/inspect (write authors CLI text; draft uses a crystal file) require explicit --as and sign journal events. Advanced: apply REQUEST.json.\nNetwork: network throwaway-key PATH | --network N --confirm-network N --custodian-key PATH network init WORD | --as WORD network show (see MAINNET-READINESS.md; mainnet signing disabled).\nGlobal: --data DIR --as WORD --network devnet|testnet|rehearsal|mainnet. LOCAL DEMO; Apache-2.0 core; paid modules excluded.");
+        return Ok(());
+    }
+    if cmd == "dictionary" {
+        if args.len()==1 || args[1]=="help" || args[1..].iter().any(|a|matches!(a.as_str(),"--help"|"-h")){println!("{}",dictionary::HELP);return Ok(());}
+        out(dictionary::cli(&root, &actor, &args[1..])?);
+        return Ok(());
+    }
+    if cmd == "mcp" || (cmd == "book" && args.get(1).is_some_and(|a|a=="list")) {
+        // Read-only startup must not create config, identity, node ID or cache.
+        let c=if root.join("config.json").exists(){read_json(&root.join("config.json"))?}else{json!({"current":"","custodians":{}})};
+        if actor.is_empty(){actor=c["current"].as_str().unwrap_or("").into();}
+        if cmd=="mcp" {exploit::configure(mappings(&c));return mcp(&actor,&root);}
+        out(dictionary_read::legacy_list(&root,&actor)?);return Ok(());
     }
     if cmd == "word" {
         if args.iter().any(|s| s == "--crystal") {
@@ -550,16 +595,18 @@ fn run() -> Result<()> {
             return Ok(());
         }
         let w = args.get(1).ok_or(anyhow!("ans word <slowo> [--lang pl|en|nl]"))?;
-        if let Ok(c) = ans_dict::book::Book::open(&root.join("book")).and_then(|b| b.lookup(w)) {
-            let lang = args.iter().position(|s| s == "--lang").and_then(|i| args.get(i + 1));
-            let pick = |k: &str| c.of_kind(k).filter(|l| lang.map_or(true, |x| l.get("lang") == Some(x.as_str()))).map(|l| l.to_value()).take(12).collect::<Vec<_>>();
-            out(json!({"word":c.id,"root":c.root,"index":c.index(),"leaves":c.leaves.len(),"senses":pick("sense"),"translations":pick("translation"),"forms":pick("form"),"exec":pick("exec"),"book":root.join("book"),"verified":"merkle root recomputed on read"}));
-            return Ok(());
+        let records=dictionary_read::browse(&root,&actor,None)?;
+        if let Some(record)=records.iter().find(|r|r.kind=="word" && ans_dict::Crystal::parse(&r.content.to_string()).is_ok_and(|c|dictionary_read::matches(&c,w))) {
+            let lang=args.iter().position(|s|s=="--lang").and_then(|i|args.get(i+1)).map(String::as_str);
+            let mut value=dictionary_read::summary(record,lang,12)?;
+            value["book"]=json!(root.join("book"));out(value);return Ok(());
         }
         let lang = args.iter().position(|s| s == "--lang").and_then(|i| args.get(i + 1)).map(String::as_str);
         let (d, src) = word::load(&root)?;
         let mut r = word::lookup(&d, w, lang)?;
         r["book"] = json!(src);
+        r["provenance"]=json!("legacy_json_unverified");
+        r["lifecycle"]=Value::Null;
         println!("{}", serde_json::to_string_pretty(&r)?);
         return Ok(());
     }
@@ -702,6 +749,43 @@ fn run() -> Result<()> {
         _ => bail!("Unknown command; ans --help"),
     }
 }
+fn network_cli(root: &Path, actor: &str, args: &[String]) -> Result<Value> {
+    match args.first().map(String::as_str) {
+        Some("throwaway-key") => {
+            let path = PathBuf::from(args.get(1).ok_or(anyhow!("ans network throwaway-key /ABSOLUTE/PATH"))?);
+            network::throwaway_key(&path)
+        }
+        Some("init") => {
+            let word = normalize(args.get(1).ok_or(anyhow!("ans --network N --confirm-network N --custodian-key PATH network init WORD"))?)?;
+            let network = network::operator_network()
+                .filter(|n| n.protected())
+                .ok_or(anyhow!("network init requires --network testnet|rehearsal|mainnet (devnet uses ans init)"))?;
+            let key = network::operator_key().ok_or(anyhow!("--custodian-key PATH is required"))?;
+            let dir = root.join("custodians").join(&word);
+            if dir.join("chain.ndjson").exists() || dir.join(network::PROFILE_FILE).exists() {
+                bail!("Custodian {word} already exists; profiles are never changed in place");
+            }
+            // Check every operator/key gate before writing anything.
+            network::admit_operator(&dir, network, &key)?;
+            fs::create_dir_all(&dir)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+            }
+            let profile = network::Profile { schema: 1, network, key_path: key };
+            fs::write(dir.join(network::PROFILE_FILE), serde_json::to_vec_pretty(&profile)?)?;
+            let verification = network::with_init(|| exploit::initialize(&word, &dir))?;
+            Ok(json!({"ok":true,"word":format!("{word}.ans"),"network":network.as_str(),"key_path":profile.key_path,"private_key":"external file; never copied or printed","verification":verification}))
+        }
+        Some("show") => {
+            let dir = root.join("custodians").join(actor);
+            let profile = network::load(&dir)?;
+            Ok(json!({"custodian":actor,"network":profile.as_ref().map(|p|p.network.as_str()).unwrap_or("devnet"),"key_path":profile.as_ref().map(|p|p.key_path.clone()),"mainnet_signing_enabled":network::MAINNET_SIGNING_ENABLED}))
+        }
+        _ => bail!("ans network throwaway-key PATH | [--network N --confirm-network N --custodian-key PATH] network init WORD | --as WORD network show"),
+    }
+}
 fn mcp_call(actor: &str, op: &str, mut body: Value) -> Result<Value> {
     body["op"] = json!(op);
     body["_source"] = json!({"surface":"mcp","app":"ans-mcp","origin":"local stdio","device":"local client — not hardware attested"});
@@ -772,7 +856,7 @@ fn mcp(actor: &str, root: &std::path::Path) -> Result<()> {
             }
             "ping" => Ok(json!({})),
             "tools/list" => Ok(
-                json!({"tools":[{"name":"exploit_state","description":"Read own local custodian state","inputSchema":{"type":"object","properties":{}}},{"name":"skill_list","description":"List own grants","inputSchema":{"type":"object","properties":{}}},{"name":"skill_run","description":"Run a consented demo plugin action; may debit demo leaves","inputSchema":{"type":"object","properties":{"name":{"type":"string"},"action":{"type":"string"}},"required":["name","action"]}}]}),
+                json!({"tools":[{"name":"exploit_state","description":"Read own local custodian state","inputSchema":{"type":"object","properties":{}}},{"name":"skill_list","description":"List own grants","inputSchema":{"type":"object","properties":{}}}]}),
             ).map(|mut v| { v["tools"].as_array_mut().unwrap().extend(words::mcp_tools()); v }
             ),
             "tools/call" => {
@@ -815,5 +899,27 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("ans: {e}");
         std::process::exit(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// User-facing pages and runtime messages are English (dictionary content may be any language).
+    #[test]
+    fn user_facing_strings_are_english() {
+        let polish = |t: &str| t.chars().any(|c| "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ".contains(c));
+        for (name, page) in [("world", super::WORLD), ("login", super::LOGIN)] {
+            assert!(!polish(page), "{name} page has Polish text");
+            assert!(!page.contains("lang=\"pl\""), "{name}");
+        }
+        for (name, src) in [("exploit", include_str!("exploit.rs")), ("main", include_str!("main.rs")), ("grow", include_str!("grow.rs")), ("chip", include_str!("chip.rs"))] {
+            let src = src.split("#[cfg(test)]").next().unwrap();
+            for line in src.lines().filter(|l| l.contains("bail!(") || l.contains("anyhow!(") || l.contains("\"error\"") || l.contains("\"warning\"") || l.contains("\"notice\"") || l.contains("<html")) {
+                assert!(!polish(line), "{name}: {line}");
+            }
+            for word in ["Niepoprawn", "Nieznan", "Najpierw", "Zaloguj", "wyprzedza", "Brak "] {
+                assert!(!src.contains(&format!("\"{word}")), "{name}: {word}");
+            }
+        }
     }
 }

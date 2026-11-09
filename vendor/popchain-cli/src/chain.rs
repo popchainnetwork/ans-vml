@@ -1323,48 +1323,7 @@ impl Db {
     }
 
     pub fn verify_block(&self, blk: &BlockV1) -> Result<()> {
-        if blk.header.version != BLOCK_VERSION {
-            return Err(anyhow!("bad block version"));
-        }
-        if blk.header.height == 0 {
-            return Err(anyhow!("height 0 reserved"));
-        }
-        if blk.app_events.len() > MAX_APP_EVENTS_PER_BLOCK {
-            return Err(anyhow!("too many app events"));
-        }
-        if blk.proofs.len() > 1024 {
-            return Err(anyhow!("too many proofs"));
-        }
-
-        for ev in &blk.app_events {
-            verify_event(ev)?;
-        }
-        let tab = total_app_bytes(&blk.app_events);
-        if tab != blk.header.total_app_bytes {
-            return Err(anyhow!("total_app_bytes mismatch"));
-        }
-        if tab > MAX_APP_BYTES_PER_BLOCK {
-            return Err(anyhow!("app bytes too large"));
-        }
-
-        for p in &blk.proofs {
-            verify_proof_canonical(p)?;
-        }
-
-        let app_hash = app_events_hash_hex(&blk.app_events);
-        if app_hash != blk.header.app_events_hash_hex {
-            return Err(anyhow!("app_events_hash mismatch"));
-        }
-
-        let proofs_hash = proof_hashes_hex(&blk.proofs);
-        if proofs_hash != blk.header.proofs_hash_hex {
-            return Err(anyhow!("proofs_hash mismatch"));
-        }
-
-        let expect_hash = block_hash(&blk.header, &blk.proofs, &blk.app_events);
-        if expect_hash.to_hex() != blk.block_hash_hex {
-            return Err(anyhow!("block_hash mismatch"));
-        }
+        verify_block_commitments(blk)?;
 
         if blk.block_signature.is_some()
             && !self.verify_block_signature_against_genesis_root(blk)?
@@ -1557,6 +1516,55 @@ fn verify_proof_canonical(p: &ProofV0) -> Result<()> {
 
 fn deterministic_finality_time_from_blocks(blocks: &[BlockV1]) -> u64 {
     blocks.last().map(|b| b.header.timestamp_unix).unwrap_or(0)
+}
+
+/// Verify public block/payload commitments only. This does not validate parent
+/// state, consensus, or an outer validator signature and never opens a database.
+pub fn verify_block_commitments(blk: &BlockV1) -> Result<()> {
+        if blk.header.version != BLOCK_VERSION {
+            return Err(anyhow!("bad block version"));
+        }
+        if blk.header.height == 0 {
+            return Err(anyhow!("height 0 reserved"));
+        }
+        if blk.app_events.len() > MAX_APP_EVENTS_PER_BLOCK {
+            return Err(anyhow!("too many app events"));
+        }
+        if blk.proofs.len() > 1024 {
+            return Err(anyhow!("too many proofs"));
+        }
+
+        for ev in &blk.app_events {
+            verify_event(ev)?;
+        }
+        let tab = total_app_bytes(&blk.app_events);
+        if tab != blk.header.total_app_bytes {
+            return Err(anyhow!("total_app_bytes mismatch"));
+        }
+        if tab > MAX_APP_BYTES_PER_BLOCK {
+            return Err(anyhow!("app bytes too large"));
+        }
+
+        for p in &blk.proofs {
+            verify_proof_canonical(p)?;
+        }
+
+        let app_hash = app_events_hash_hex(&blk.app_events);
+        if app_hash != blk.header.app_events_hash_hex {
+            return Err(anyhow!("app_events_hash mismatch"));
+        }
+
+        let proofs_hash = proof_hashes_hex(&blk.proofs);
+        if proofs_hash != blk.header.proofs_hash_hex {
+            return Err(anyhow!("proofs_hash mismatch"));
+        }
+
+        let expect_hash = block_hash(&blk.header, &blk.proofs, &blk.app_events);
+        if expect_hash.to_hex() != blk.block_hash_hex {
+            return Err(anyhow!("block_hash mismatch"));
+        }
+
+    Ok(())
 }
 
 fn block_hash(header: &BlockHeaderV1, proofs: &[ProofV0], app_events: &[AppEventV0]) -> BlockHash {

@@ -366,8 +366,8 @@ recovery records `interrupted` and does not invent success; (2) after a synced
 that operation as accepted without a second native mint. These are process
 SIGKILL/exit boundaries after `sync_data`/`sync_kernel`, **not** a claim of
 power-loss atomicity across journal and kernel, copied-backup rollback safety,
-or production audit certification. Legacy mutating CLI paths refuse to sign while a
-dictionary intent is pending so intent→native→outcome adjacency is preserved. Test-only crashes require an
+or production audit certification. Every non-dictionary signed journal append (local CLI and online `/api/exploit`/`Exploit::record`)
+refuses while a dictionary intent is pending so intent→native→outcome adjacency is preserved. Test-only crashes require an
 `allow-test-crash` sentinel in the disposable custodian directory.
  No claim of atomicity between journal and kernel, backup rollback resistance or external exactly-once effects is made.
 

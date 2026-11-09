@@ -2216,6 +2216,103 @@ mod tests {
         assert!(crate::dictionary_read::replay_verified(&journal).is_ok());
     }
     #[test]
+    fn online_exploit_record_refused_while_dictionary_mint_pending() {
+        // Online serve/api uses Exploit::record directly (not only record_local). Pending
+        // dictionary mint must refuse foreign appends at that common choke point too.
+        let h = Home::new();
+        let c = crystal("y", true);
+        let r = root(&c);
+        assert_eq!(status(&h.apply("d", draft(c.clone()))), "accepted");
+        assert_eq!(
+            status(&h.apply("v", Command::Validate { root: r.clone() })),
+            "accepted"
+        );
+        let dir = h.0.join("custodians/alice");
+        let req = Request {
+            op_id: OperationId("online-gap".into()),
+            command: Command::Mint { root: r.clone() },
+        };
+        let digest = hash(&serde_json::to_value(&req.command).unwrap()).unwrap();
+        append(
+            "alice",
+            &dir,
+            "dictionary.intent",
+            json!({"request":req,"command_digest":digest,"canonical":true}),
+        )
+        .unwrap();
+        append(
+            "alice",
+            &dir,
+            "word.mint",
+            json!({
+                "word":"y",
+                "root":r.0,
+                "file":"u0079.crystal.json",
+                "layer":1,
+                "letters":[],
+                "op_id":"online-gap",
+                "service":"dictionary",
+                "chain":"local test journal; not mainnet"
+            }),
+        )
+        .unwrap();
+        let before = h.journal().len();
+        for (action_name, payload) in [
+            (
+                "contact.add",
+                json!({"word":"bob"}),
+            ),
+            (
+                "custodian.login",
+                json!({"local_demo":true}),
+            ),
+            (
+                "skill.list",
+                json!({"count":0}),
+            ),
+        ] {
+            let err = crate::exploit::record_online_style("alice", &dir, action_name, payload)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("incomplete") || err.contains("Dictionary operation"),
+                "{action_name}: {err}"
+            );
+        }
+        assert_eq!(h.journal().len(), before);
+        // Dictionary recovery must still proceed through the same choke point.
+        let recovered = h.apply("online-gap", Command::Mint { root: r.clone() });
+        assert_eq!(status(&recovered), "accepted");
+        assert_eq!(recovered["receipt"]["entry"]["state"], "minted");
+        assert_eq!(
+            h.journal()
+                .iter()
+                .filter(|e| action(e) == "word.mint")
+                .count(),
+            1
+        );
+        // After outcome, online-style foreign mutation is admitted again.
+        crate::exploit::record_online_style(
+            "alice",
+            &dir,
+            "contact.add",
+            json!({"word":"bob"}),
+        )
+        .unwrap();
+        assert!(h
+            .journal()
+            .iter()
+            .any(|e| action(e) == "contact.add"));
+        let journal = h.journal();
+        let mint_idx = journal
+            .iter()
+            .position(|e| action(e) == "word.mint" && data(e)["op_id"] == "online-gap")
+            .unwrap();
+        assert_eq!(action(&journal[mint_idx - 1]), "dictionary.intent");
+        assert_eq!(action(&journal[mint_idx + 1]), "dictionary.outcome");
+        assert!(crate::dictionary_read::replay_verified(&journal).is_ok());
+    }
+    #[test]
     fn legacy_mint_gets_new_attempt_after_dependency_rejection() {
         // Deterministic legacy-mint-ROOT must stay idempotent for exact retries, but after a
         // rejected attempt the convenience CLI must open a new attempt once dependencies exist.

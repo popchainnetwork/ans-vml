@@ -136,7 +136,9 @@ memory. Editing the files later does not change the running server; stop, review
 and restart explicitly.
 
 The page is an English, mobile-first product page (360 px phones up to desktop,
-dark and light colour schemes, 44 px+ touch targets, no horizontal scrolling). It
+dark pixel/terminal theme matching the bitxbit.io homepage look, a decorative
+pixel starfield that stops under reduced motion and in hidden tabs, 44 px+ touch
+targets, no horizontal scrolling). It
 shows the actual selected word and character entries, minted state, language,
 content roots, the ordered dependency closure, native block/event references,
 signed outcome sequences and the pinned signer. Search and character links inspect

@@ -12,6 +12,46 @@ async function api(path) {
   if (!r.ok) throw new Error('Could not load ' + path + ' (HTTP ' + r.status + ').');
   return r.json();
 }
+// Decorative pixel starfield (square pixels, like the bitxbit.io homepage). Pauses when
+// the tab is hidden and draws one still frame when reduced motion is requested.
+const stillMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+function pixelField() {
+  const c = $('px'); const ctx = c && c.getContext && c.getContext('2d'); if (!ctx) return;
+  let w = 0, h = 0, stars = [], raf = 0, last = 0;
+  const spawn = far => ({x: (Math.random() - .5) * 2, y: (Math.random() - .5) * 2, z: far ? 1 : .1 + Math.random() * .9, m: Math.random() < .14});
+  function draw() {
+    ctx.clearRect(0, 0, w, h);
+    for (const s of stars) {
+      const k = 1 / s.z, x = Math.round(w / 2 + s.x * k * w * .22), y = Math.round(h / 2 + s.y * k * h * .22);
+      if (x < -8 || x > w + 8 || y < -8 || y > h + 8) continue;
+      const size = Math.max(1, Math.round((1 - s.z) * 7));
+      ctx.globalAlpha = Math.min(.8, (1 - s.z) + .15); ctx.fillStyle = s.m ? '#ff4df0' : '#8ff';
+      ctx.fillRect(x - (size >> 1), y - (size >> 1), size, size);
+    }
+    ctx.globalAlpha = 1;
+  }
+  function resize() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2); w = window.innerWidth; h = window.innerHeight;
+    c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    stars = Array.from({length: Math.round(Math.min(200, w * h / (w < 700 ? 7000 : 5500)))}, () => spawn(false)); draw();
+  }
+  function step(t) {
+    raf = requestAnimationFrame(step); if (t - last < 33) return;
+    const dt = Math.min(.1, (t - last) / 1000); last = t;
+    for (const s of stars) { s.z -= dt * .055; if (s.z <= .06) Object.assign(s, spawn(true)); }
+    draw();
+  }
+  function run() { cancelAnimationFrame(raf); if (!stillMotion.matches && !document.hidden) { last = performance.now(); raf = requestAnimationFrame(step); } else draw(); }
+  window.addEventListener('resize', resize); document.addEventListener('visibilitychange', run);
+  if (stillMotion.addEventListener) stillMotion.addEventListener('change', run);
+  resize(); run();
+}
+function bootLog(lines) {
+  const pre = $('boot'); pre.textContent = '';
+  if (stillMotion.matches) { pre.textContent = lines.join('\n'); return; }
+  let i = 0; const tick = () => { if (i < lines.length) { pre.textContent += (i ? '\n' : '') + lines[i++]; setTimeout(tick, 140 + Math.random() * 120); } }; tick();
+}
+pixelField();
 let toastTimer = 0;
 function toast(text) { const t = $('toast'); t.textContent = text; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 2200); }
 function fail(error) { $('error').textContent = error.message || 'The verified snapshot is unavailable.'; $('error').hidden = false; $('entry').setAttribute('aria-busy', 'false'); }
@@ -180,11 +220,13 @@ $('use-wrong-key').addEventListener('click', () => {
     $('status').classList.add('ok');
     $('status-title').textContent = 'Served proof verified' + (id ? ': ' + id : '');
     $('status-detail').textContent = entries.length + ' minted entries · pinned key ' + pinnedKey.slice(0, 12) + '… · last signed event #' + v.at_sequence;
+    bootLog(['> genesis visitor :: read-only', '> public proof loaded ........ ok', '> pinned key ' + pinnedKey.slice(0, 8) + '… ...... ok', '> signatures + payloads ...... ok', '> ' + entries.length + ' minted entries ......... ok', '> ready. no signer opened.']);
     try { renderGlance(await api('/api/entry/' + data.target_root)); } catch (_) { /* optional summary */ }
     await select(data.target_root, false);
   } catch (error) {
     fail(error); $('status').classList.add('bad');
     $('status-title').textContent = 'No verified data loaded'; $('status-detail').textContent = 'Nothing is shown instead of unverified data.';
     $('catalog-status').textContent = 'No verified data loaded.';
+    bootLog(['> genesis visitor :: read-only', '> public proof ............... FAILED', '> nothing shown instead.']);
   }
 })();

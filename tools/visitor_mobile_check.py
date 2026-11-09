@@ -19,6 +19,7 @@ with sync_playwright() as p:
         pg.on("console",lambda m: errs.append(m.text) if m.type in("error","warning") else None)
         pg.on("pageerror",lambda e: errs.append(str(e)))
         pg.goto(U); pg.wait_for_selector(".entry-title",timeout=15000)
+        if pg.locator("#boot").count(): pg.wait_for_selector("#boot:has-text('ready')",timeout=15000)
         r={"title":pg.title(),"status":pg.text_content("#status-title"),"overflow":overflow(pg),"small_targets":small_targets(pg)}
         pg.screenshot(path=OUT+name+"-top.png")
         pg.screenshot(path=OUT+name+"-full.png",full_page=True)

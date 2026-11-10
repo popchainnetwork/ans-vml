@@ -308,6 +308,27 @@ execution. `skill_run` (CLI `ans skill run`, MCP and the `/api/exploit` web rout
 disabled with an explicit error. Other `/api/exploit` chat/contact operations are unchanged,
 and the read-only visitor server never exposes `/api/exploit`.
 
+### Console output for operations on words
+
+On an interactive terminal, `mint`, `mint-alphabet`, `mint-meaning`, `delegate`,
+`revoke`, `run` and the owner `dictionary write|draft|validate|mint|inspect` commands
+print short sentences about the word, for example:
+
+```text
+Meaning added to word "oak" (en): signed as block 34 on devnet.
+  Recorded as intent → word.meaning → outcome, operation legacy-meaning-….
+Word "oak" is already delegated for scope "review"; nothing was signed.
+Dictionary mint of word "oak" was rejected: Mint requires validated state.
+```
+
+The text is rendered from the same result and never decides anything itself; a rejected
+receipt is always printed as a rejection, and crystal gaps are printed as notes. When
+stdout is not a terminal (pipes, scripts, tests) the output stays the unchanged JSON.
+Force one format with `--text` or `--json` (each at most once, not both); the flag is
+removed before dispatch, so it can never end up in signed meaning text. Refusals are
+printed as `ans: refused: …` on stderr with a non-zero exit code. Read-only commands,
+proofs and exports keep printing JSON.
+
 ### Fresh disposable bootstrap and the native rdzeń flow
 
 From the repository root after building, this uses only direct commands and public

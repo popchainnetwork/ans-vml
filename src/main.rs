@@ -15,6 +15,7 @@ mod dictionary;
 mod dictionary_read;
 mod dictionary_web;
 mod network;
+mod say;
 use anyhow::{anyhow, bail, Result};
 use rand::RngCore;
 use serde_json::{json, Value};
@@ -536,6 +537,30 @@ fn run() -> Result<()> {
             bail!("Global flag {flag} given more than once; refusing an ambiguous command");
         }
     }
+    // Output format for operations on words: sentences on a terminal, JSON when piped.
+    // Taken out before dispatch so the flag never ends up inside signed text.
+    let mut format_flags = [false; 2];
+    for (n, flag) in ["--json", "--text"].iter().enumerate() {
+        match args.iter().filter(|a| a.as_str() == *flag).count() {
+            0 => {}
+            1 => {
+                format_flags[n] = true;
+                args.retain(|a| a.as_str() != *flag);
+            }
+            _ => bail!("Output flag {flag} given more than once; refusing an ambiguous command"),
+        }
+    }
+    if format_flags[0] && format_flags[1] {
+        bail!("Choose one output format: --json or --text");
+    }
+    let output = {
+        use std::io::IsTerminal;
+        say::Output::choose(format_flags[0], format_flags[1], std::io::stdout().is_terminal())
+    };
+    let print = |text: Option<String>, v: Value| match (output, text) {
+        (say::Output::Text, Some(t)) => println!("{t}"),
+        _ => out(v),
+    };
     for flag in ["--data", "--as"] {
         if let Some(i) = args.iter().position(|s| s == flag) {
             let value = args
@@ -573,12 +598,20 @@ fn run() -> Result<()> {
         bail!("Protected profiles are initialized only with `ans --network N --confirm-network N --custodian-key PATH network init WORD`");
     }
     if cmd == "help" || cmd == "--help" {
-        println!("ans init|install <word> | grow --plan|--apply [--hosts hosts.toml] | up | status | chat [to text] | skill list|add|grant|revoke|run | node [resolve /word/channel] | book resolve <word> | attest | word <slowo> [--lang pl|en|nl | --crystal] | boot --plan | book seed|add|list|import-kaikki|serve --port N | mint <word>|--all | delegate|revoke <word> <scope> | run <word> [--plan] [input] | sync http://127.0.0.1:PORT | licenses | inventory\nDictionary: dictionary --help. Read-only list/show/export/verify/serve; owner write/draft/validate/mint/inspect (write authors CLI text; draft uses a crystal file) require explicit --as and sign journal events. Advanced: apply REQUEST.json.\nNetwork: network throwaway-key PATH | --network N --confirm-network N --custodian-key PATH network init WORD | --as WORD network show (see MAINNET-READINESS.md; mainnet signing disabled).\nGlobal: --data DIR --as WORD --network devnet|testnet|rehearsal|mainnet. LOCAL DEMO; Apache-2.0 core; paid modules excluded.");
+        println!("ans init|install <word> | grow --plan|--apply [--hosts hosts.toml] | up | status | chat [to text] | skill list|add|grant|revoke|run | node [resolve /word/channel] | book resolve <word> | attest | word <slowo> [--lang pl|en|nl | --crystal] | boot --plan | book seed|add|list|import-kaikki|serve --port N | mint <word>|--all | delegate|revoke <word> <scope> | run <word> [--plan] [input] | sync http://127.0.0.1:PORT | licenses | inventory\nDictionary: dictionary --help. Read-only list/show/export/verify/serve; owner write/draft/validate/mint/inspect (write authors CLI text; draft uses a crystal file) require explicit --as and sign journal events. Advanced: apply REQUEST.json.\nNetwork: network throwaway-key PATH | --network N --confirm-network N --custodian-key PATH network init WORD | --as WORD network show (see MAINNET-READINESS.md; mainnet signing disabled).\nGlobal: --data DIR --as WORD --network devnet|testnet|rehearsal|mainnet. Output: word operations print sentences on a terminal and JSON when piped; force with --text or --json. LOCAL DEMO; Apache-2.0 core; paid modules excluded.");
         return Ok(());
     }
     if cmd == "dictionary" {
         if args.len()==1 || args[1]=="help" || args[1..].iter().any(|a|matches!(a.as_str(),"--help"|"-h")){println!("{}",dictionary::HELP);return Ok(());}
-        out(dictionary::cli(&root, &actor, &args[1..])?);
+        let v = dictionary::cli(&root, &actor, &args[1..])?;
+        let sub = args[1].as_str();
+        let text = matches!(sub, "write" | "draft" | "validate" | "mint" | "inspect")
+            .then(|| {
+                let target = if sub == "write" { args.get(3) } else { args.get(2) };
+                say::dictionary_receipt(sub, target.map(String::as_str).unwrap_or(""), &v)
+            })
+            .flatten();
+        print(text, v);
         return Ok(());
     }
     if cmd == "mcp" || (cmd == "book" && args.get(1).is_some_and(|a|a=="list")) {
@@ -632,7 +665,7 @@ fn run() -> Result<()> {
         actor = c["current"].as_str().unwrap_or("").into()
     }
     if let Some(v) = words::handle(cmd, &args, &root, &actor)? {
-        out(v);
+        print(say::word_command(cmd, &v), v);
         return Ok(());
     }
     if cmd == "init" || cmd == "install" {

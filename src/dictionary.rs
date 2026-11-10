@@ -3146,4 +3146,36 @@ mod tests {
         assert_eq!(h.journal().len(), n);
         assert!(crate::dictionary_read::replay_verified(&h.journal()).is_ok());
     }
+    #[test]
+    fn annotation_operation_id_conflicts_are_rejected_without_effects() {
+        let h = Home::new();
+        let w = minted_word(&h, "ij", false);
+        let r = ContentRoot(w.root.clone());
+        let m = legacy(&h, &["mint-meaning", "ij", "en", "first meaning"]).unwrap();
+        let mid = m["op_id"].as_str().unwrap().to_owned();
+        let d = legacy(&h, &["delegate", "ij", "review"]).unwrap();
+        let did = d["op_id"].as_str().unwrap().to_owned();
+        let (meanings, grants) = (count(&h, "word.meaning"), count(&h, "word.delegate"));
+        // Same operation ID, different meaning text: signed rejection, original effect unchanged.
+        let c1 = h.apply(&mid, Command::Meaning { root: r.clone(), lang: "en".into(), text: "other meaning".into() });
+        assert_eq!(status(&c1), "rejected", "{c1}");
+        assert_eq!(c1["retry"], true);
+        // Same operation ID reused for a different action (delegate ID used for a revoke).
+        let c2 = h.apply(&did, Command::Revoke { root: r.clone(), scope: "review".into() });
+        assert_eq!(status(&c2), "rejected", "{c2}");
+        // Same delegate ID, different scope.
+        let c3 = h.apply(&did, Command::Delegate { root: r.clone(), scope: "admin".into() });
+        assert_eq!(status(&c3), "rejected", "{c3}");
+        assert_eq!(count(&h, "word.meaning"), meanings);
+        assert_eq!(count(&h, "word.delegate"), grants);
+        assert_eq!(count(&h, "word.revoke"), 0);
+        let j = h.journal();
+        assert!(active_grants(&j).contains(&(w.root.clone(), "review".into())));
+        assert!(!active_grants(&j).contains(&(w.root.clone(), "admin".into())));
+        // The exact original request still replays as accepted, signing nothing new.
+        let n = h.journal().len();
+        assert_eq!(legacy(&h, &["mint-meaning", "ij", "en", "first meaning"]).unwrap()["already"], true);
+        assert_eq!(h.journal().len(), n);
+        assert!(crate::dictionary_read::replay_verified(&h.journal()).is_ok());
+    }
 }
